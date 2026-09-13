@@ -678,6 +678,30 @@ a { color: var(--accent-text); }
 .stage.active .s-dot { border-color: var(--accent); }
 .stage.active .s-dot::after { content: ""; position: absolute; inset: -5px; border-radius: 50%; border: 2px solid transparent; border-top-color: var(--accent); animation: spin 0.9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+.timer-card {
+  min-width: 250px;
+  padding: 18px 22px;
+  border-radius: 20px;
+  border: 1px solid var(--line-strong);
+  background: linear-gradient(150deg, var(--accent-softer), transparent 70%), var(--surface);
+  text-align: right;
+}
+.timer-label { display: inline-flex; align-items: center; gap: 8px; font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); }
+.timer-value { font-size: 44px; line-height: 1.05; letter-spacing: -0.02em; margin: 6px 0 2px; font-variant-numeric: tabular-nums; }
+.timer-sub { font-size: 12px; }
+.console .line.checkpoint { color: var(--ok); }
+.length-plan { display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); gap: 4px 28px; margin-top: 14px; }
+.length-row { display: grid; grid-template-columns: 170px 1fr 84px 36px; gap: 12px; align-items: center; padding: 6px 0; border-bottom: 1px dashed var(--line); }
+.length-name { font-weight: 520; font-size: 13.5px; }
+.length-input { padding: 7px 8px; border-radius: 10px; text-align: right; font-family: "Geist Mono Variable", monospace; font-size: 13px; }
+.kw-editor { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 12px; border: 1px solid var(--line-strong); border-radius: 14px; background: var(--surface); }
+.kw-chip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 6px 5px 12px; border-radius: 999px; background: var(--accent-soft); font-size: 13px; }
+.kw-chip button { border: 0; background: none; cursor: pointer; color: inherit; display: grid; place-items: center; padding: 2px; border-radius: 50%; }
+.kw-chip button:hover { background: var(--surface-3); }
+.kw-input { flex: 1; min-width: 180px; border: 0; background: none; outline: none; padding: 6px; }
+.stale-banner { position: sticky; top: 0; z-index: 6; padding: 10px 22px; background: color-mix(in srgb, var(--warn) 18%, var(--bg)); border-bottom: 1px solid color-mix(in srgb, var(--warn) 50%, transparent); font-size: 13px; display: flex; gap: 10px; align-items: center; }
+.stage.failed { color: var(--ink); }
+.stage.failed .s-dot { border-color: var(--bad); color: var(--bad); }
 .stage b { font-weight: 560; display: block; }
 .stage small { font-size: 12px; color: var(--muted); }
 

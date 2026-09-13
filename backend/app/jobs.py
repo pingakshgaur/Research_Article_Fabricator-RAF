@@ -20,7 +20,7 @@ _lock = threading.Lock()
 
 def emit(pid: str, kind: str, message: str = "", **data) -> None:
     event = {"t": time.time(), "kind": kind, "message": message, **data}
-    if kind in {"log", "stage", "segment", "error", "done"}:
+    if kind in {"log", "stage", "segment", "error", "done", "job", "checkpoint"}:
         try:
             def add(p):
                 p.log.append(event)

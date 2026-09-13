@@ -135,15 +135,30 @@ def reference_tables(tables: list[list[list[str]]]) -> list[tuple[str, pd.DataFr
         if len(rows) < 6 or len(rows[0]) < 3:
             continue
         header, body = rows[0], rows[1:]
+        # PDF table finders often mistake multi-column prose for tables: blank headers and paragraph-sized cells.
+        cells = [str(c or "") for r in rows for c in r]
+        if sum(1 for h in header if not str(h or "").strip()) > len(header) / 2 or sum(map(len, cells)) / max(1, len(cells)) > 60:
+            continue
         width = len(header)
         body = [r for r in body if len(r) == width]
-        df = pd.DataFrame(body, columns=[h or f"col{j}" for j, h in enumerate(header)])
+        df = pd.DataFrame(body, columns=unique_columns(header))
         numeric = df.apply(lambda s: pd.to_numeric(s.astype(str).str.replace(r"[,%$€£]", "", regex=True), errors="coerce"))
         good = [c for c in numeric.columns if numeric[c].notna().mean() > 0.8]
         if len(good) >= 2 and len(df) >= 5:
             df[good] = numeric[good]
             out.append((f"Table extracted from reference material #{i + 1}", df, {"origin": "table in uploaded reference", "rows": len(df)}))
     return out[:2]
+
+
+def unique_columns(names) -> list[str]:
+    """Blank or repeated headers make df[col] return a DataFrame instead of a Series; give every column a unique name."""
+    seen: dict[str, int] = {}
+    out = []
+    for j, name in enumerate(names):
+        base = " ".join(str(name or "").split())[:60] or f"Column {j + 1}"
+        seen[base] = seen.get(base, 0) + 1
+        out.append(base if seen[base] == 1 else f"{base} ({seen[base]})")
+    return out
 
 
 def _short(label: str) -> str:
@@ -191,9 +206,9 @@ class Analyzer:
     # ----------------------------------------------------------- helpers
     def _clean(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
-        df.columns = [str(c).strip() for c in df.columns]
+        df.columns = unique_columns(df.columns)
         for c in df.columns:
-            if df[c].dtype == object:
+            if not pd.api.types.is_numeric_dtype(df[c]):  # pandas 3 uses a "str" dtype, not object
                 conv = pd.to_numeric(df[c].astype(str).str.replace(r"[,%$€£\s]", "", regex=True), errors="coerce")
                 if conv.notna().mean() > 0.85:
                     df[c] = conv

@@ -20,6 +20,20 @@ All text generation runs on your own machine through **Ollama + `gemma4:12b`**. 
 | **05 Studio** | Read each segment on a paper-style page with hoverable citations, tables and figures. Request changes in plain language, apply text tools (Expand, Condense, Formalize, Simplify, Add citations, Polish, Humanize, Strengthen) to a whole segment or a selected passage, edit by hand, restore versions, and approve. |
 | **06 Publish** | Once every segment is approved, download a typeset PDF or DOCX (or Markdown). You can also re-import an edited DOCX, PDF or Markdown file, and RAF splits it back into segments. |
 
+## Reliability & speed features
+
+* **Timer.** The Fabrication screen shows the total time, the time for each stage and the time for each segment. Time adds up across resumed sessions.
+* **Checkpoints.** RAF saves progress as it goes: each reference it reads, the online research, the index, the analysis, the literature themes, and every evidence note, drafted part and refinement of a segment. **Resume from checkpoint** continues at the exact step that was interrupted. This also works after the API server was closed or crashed.
+* **Fallbacks.** Problems don't stop the whole run:
+  * If research or analysis fails, RAF continues without it.
+  * If a segment fails, RAF retries it in Quick mode, then with a single-pass emergency draft.
+  * If the model runs out of memory, RAF reduces the number of agents, then lowers GPU offload step by step down to CPU only.
+  * If Ollama crashes or restarts, RAF waits up to `RAF_OLLAMA_WAIT` seconds for it to come back.
+* **Agents.** Solo, Duo or Trio model workers. Segments that don't depend on each other are written side by side, and evidence notes are prepared ahead of drafting. Set `OLLAMA_NUM_PARALLEL` to at least the number of agents before running `ollama serve`, otherwise Ollama queues the requests and there is no speed-up.
+* **Per-segment lengths.** Set a word target for each segment on the Segments page. Segments that haven't started can still be changed during fabrication.
+* **Front matter editing.** The Studio has dedicated editors for the Title (with suggestions), Keywords (chips) and Abstract (live word count). You can also add any of these by hand if they weren't generated.
+* **Outdated-server warning.** The UI shows a banner when the API process is running older code than the interface. Restart the API after you update RAF.
+
 ## How RAF writes
 
 ```

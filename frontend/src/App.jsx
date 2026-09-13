@@ -9,6 +9,9 @@ import Processing from "./pages/Processing.jsx";
 import Studio from "./pages/Studio.jsx";
 import Publish from "./pages/Publish.jsx";
 
+// Must match API_VERSION in backend/app/main.py.
+const EXPECTED_API = "1.2.0";
+
 const STEPS = [
   { key: "setup", label: "Topic & title", hint: "What are we writing?" },
   { key: "references", label: "References", hint: "10–20 source articles" },
@@ -71,7 +74,7 @@ export default function App() {
     const stop = api.events(route.id, (ev) => {
       if (ev.kind === "hello") return;
       setEvents((list) => [...list.slice(-600), ev]);
-      if (["segment", "job", "done", "error"].includes(ev.kind)) {
+      if (["segment", "job", "done", "error", "stage", "checkpoint"].includes(ev.kind)) {
         clearTimeout(timer);
         timer = setTimeout(() => refresh().catch(() => {}), 250);
       }
@@ -84,7 +87,7 @@ export default function App() {
     mainRef.current?.scrollTo({ top: 0 });
   };
 
-  const view = project ? route.view || (project.stage === "processing" && !project.busy && Object.keys(project.segments).length ? "studio" : project.stage) : null;
+  const view = project ? route.view || (project.stage === "processing" && !project.busy && Object.values(project.segments).every((s) => s.content) && Object.keys(project.segments).length ? "studio" : project.stage) : null;
   const reached = project ? STEPS.findIndex((s) => s.key === project.stage) : -1;
   const hasDrafts = project && Object.values(project.segments).some((s) => s.content);
 
@@ -136,6 +139,15 @@ export default function App() {
       </nav>
 
       <main className="main" ref={mainRef}>
+        {health?.status === "ok" && health.api_version !== EXPECTED_API && (
+          <div className="stale-banner" role="alert">
+            <span className="dot bad" />
+            <span>
+              <b>The API server is running older code</b> ({health.api_version || "before 1.2"}; this interface expects {EXPECTED_API}).
+              Restart it so the latest fixes apply: press <span className="mono">Ctrl+C</span> in the API window and start it again.
+            </span>
+          </div>
+        )}
         {!route.id && route.view !== "new" && <Home navigate={navigate} health={health} />}
         {!route.id && route.view === "new" && <Setup {...pageProps} project={null} />}
         {route.id && !project && <div className="empty">Loading project…</div>}

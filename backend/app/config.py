@@ -38,6 +38,8 @@ class Settings:
     llm_timeout: int = _env_int("RAF_LLM_TIMEOUT", 900)
     # Layers offloaded to the GPU. -1 lets Ollama decide; 0 forces CPU-only (use this if CUDA crashes on small GPUs).
     num_gpu: int = _env_int("RAF_NUM_GPU", -1)
+    # How long a run waits for a crashed or restarting Ollama before giving up on a call.
+    ollama_wait: int = _env_int("RAF_OLLAMA_WAIT", 600)
 
     # --- Workflow rules ---
     min_references: int = _env_int("RAF_MIN_REFS", 10)

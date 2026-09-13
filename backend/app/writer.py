@@ -5,21 +5,34 @@ Corpus pipeline:  parse references → extract metadata → chunk → plan resea
 Segment pipeline (per rhetorical move of the segment's blueprint):
                   retrieve (hybrid RRF + MMR) → evidence notes (paraphrased, cited) → draft paragraphs
                   → critic scores the blueprint checklist → refine → de-cliché → originality guard → number verification.
+
+Reliability features
+  * Checkpoints   — every finished corpus stage, literature theme set, evidence note, drafted move and refinement is
+                    saved (checkpoints.py), so "Resume" continues from the exact step that was interrupted.
+  * Fallbacks     — each stage degrades instead of stopping: research/analysis failures continue without them, a failing
+                    segment is retried in quick mode and then with a single-pass emergency draft, model memory errors
+                    lower concurrency/GPU offload (llm.py), and a restarting Ollama is waited for.
+  * Agents        — 1 (solo), 2 (duo) or 3 (trio) parallel model workers: independent segments are written side by side
+                    following the dependency graph, and evidence notes are prepared ahead of the drafting agent.
+  * Timer         — Project.run records total, per-stage and per-segment time across resumed sessions.
 """
 from __future__ import annotations
 
 import json
 import logging
 import re
-from pathlib import Path
+import threading
+import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
 import numpy as np
 
 from . import analysis as analysis_mod
 from . import citations, jobs, llm, originality, research, store
 from .blueprints import BLUEPRINTS, COMMON_RULES, Blueprint, Move, generation_order
+from .checkpoints import Checkpoints, signature
 from .ingest import chunk_text, heuristic_metadata, llm_metadata, read_any, strip_back_matter
-from .models import AnalysisResult, Figure, GenerateRequest, Project, QualityReport, Segment, Table, Version
+from .models import AnalysisResult, Figure, GenerateRequest, Project, QualityReport, RunInfo, Segment, Table, Version
 from .rag import Chunk, HybridIndex
 
 log = logging.getLogger("raf.writer")
@@ -28,6 +41,15 @@ AUTHOR_SYSTEM = (
     "You are RAF, a senior academic author and peer reviewer who writes publication-ready scholarly articles. "
     "You write in fluent, natural, human academic English with precise terminology and original phrasing."
 )
+EVIDENCE_SEGMENTS = ("introduction", "literature_review", "methodology", "results", "discussion", "conclusion", "limitations")
+LENGTH_LIMITS = {"abstract": (100, 400)}
+DEFAULT_LIMITS = (100, 6000)
+_lane = threading.local()
+
+
+def lane_prefix() -> str:
+    lane = getattr(_lane, "value", 0)
+    return f"[Agent {lane}] " if lane and llm.runtime.capacity > 1 else ""
 
 
 # ====================================================================== workspace
@@ -37,6 +59,8 @@ class Workspace:
         self.dir = store.project_dir(pid)
         self._index: HybridIndex | None = None
         self._fp: originality.SourceFingerprint | None = None
+        self._lock = threading.RLock()
+        self.cp = Checkpoints(self.dir, on_save=self._checkpoint_saved)
 
     @property
     def project(self) -> Project:
@@ -46,22 +70,36 @@ class Workspace:
         return p
 
     def log(self, message: str, **data) -> None:
-        jobs.emit(self.pid, "log", message, **data)
+        jobs.emit(self.pid, "log", lane_prefix() + message, **data)
+
+    def stage(self, message: str, stage: str, **data) -> None:
+        jobs.emit(self.pid, "stage", lane_prefix() + message, stage=stage, **data)
+
+    def _checkpoint_saved(self, label: str) -> None:
+        def bump(p: Project):
+            p.run.checkpoints += 1
+        try:
+            store.mutate(self.pid, bump)
+        except KeyError:
+            return
+        jobs.emit(self.pid, "checkpoint", f"⚑ Checkpoint saved · {label}")
 
     @property
     def index(self) -> HybridIndex:
-        if self._index is None:
-            self._index = HybridIndex.load(self.dir / "index")
-        return self._index
+        with self._lock:
+            if self._index is None:
+                self._index = HybridIndex.load(self.dir / "index")
+            return self._index
 
     @property
     def fingerprint(self) -> originality.SourceFingerprint:
-        if self._fp is None:
-            texts = [c.text for c in self.index.chunks]
-            for f in (self.dir / "index").glob("ref_*.txt"):
-                texts.append(f.read_text(encoding="utf-8"))
-            self._fp = originality.SourceFingerprint(texts)
-        return self._fp
+        with self._lock:
+            if self._fp is None:
+                texts = [c.text for c in self.index.chunks]
+                for f in (self.dir / "index").glob("ref_*.txt"):
+                    texts.append(f.read_text(encoding="utf-8"))
+                self._fp = originality.SourceFingerprint(texts)
+            return self._fp
 
     def set_segment(self, key: str, **fields) -> Project:
         def apply(p: Project):
@@ -74,75 +112,202 @@ class Workspace:
             jobs.emit(self.pid, "segment", f"{BLUEPRINTS[key].title}: {fields['status']}", key=key, status=fields["status"])
         return p
 
+    # ------------------------------------------------------------------ timer
+    def begin_stage(self, stage: str) -> None:
+        now = time.time()
+
+        def apply(p: Project):
+            _close_stages(p.run, now)
+            p.run.stage_started[stage] = now
+        store.mutate(self.pid, apply)
+
+    def segment_clock(self, key: str, running: bool) -> None:
+        now = time.time()
+
+        def apply(p: Project):
+            if running:
+                p.run.segment_started[key] = now
+            elif key in p.run.segment_started:
+                started = p.run.segment_started.pop(key)
+                p.run.segment_seconds[key] = round(p.run.segment_seconds.get(key, 0) + now - started, 1)
+        store.mutate(self.pid, apply)
+
+
+def _close_stages(run: RunInfo, now: float) -> None:
+    for name, started in list(run.stage_started.items()):
+        run.stages[name] = round(run.stages.get(name, 0) + now - started, 1)
+    run.stage_started = {}
+
+
+def segment_words(p: Project, key: str) -> int:
+    bp = BLUEPRINTS[key]
+    if key in p.segment_lengths:
+        return int(p.segment_lengths[key])
+    if key == "abstract":
+        return 220
+    return max(0, int(p.target_words * bp.word_share))
+
+
+def clamp_length(key: str, words: int) -> int:
+    lo, hi = LENGTH_LIMITS.get(key, DEFAULT_LIMITS)
+    return max(lo, min(hi, int(words)))
+
 
 # ====================================================================== corpus
 def build_corpus(ws: Workspace, req: GenerateRequest) -> None:
     p = ws.project
-    jobs.emit(ws.pid, "stage", "Reading and indexing reference documents", stage="parsing")
-    chunks: list[Chunk] = []
+    ws.begin_stage("parsing")
+    ws.stage("Reading and indexing reference documents", "parsing")
     ref_tables: list = []
-    parsed_refs = []
+    parsed_refs: list[tuple] = []
+    legacy_tables = ws.dir / "index" / "ref_tables.json"
+    to_describe = []
+
     for ref in p.references:
         path = ws.dir / "uploads" / ref.filename
-        try:
+        cached_text = ws.dir / "index" / f"ref_{ref.id}.txt"
+        cached_tables = ws.dir / "index" / f"ref_{ref.id}.tables.json"
+        if ref.status == "parsed" and cached_text.exists():  # checkpoint from an earlier run
+            if cached_tables.exists():
+                ref_tables.extend(json.loads(cached_tables.read_text(encoding="utf-8")))
+            parsed_refs.append((ref, cached_text.read_text(encoding="utf-8")))
+            ws.log(f"↺ Reusing {ref.title[:90]} (read in an earlier run)")
+            continue
+        try:  # PDF libraries are not thread-safe: parse sequentially, describe (LLM) in parallel below
             ws.log(f"Parsing {ref.filename}")
             doc = read_any(path)
             if len(doc.text) < 300:
                 raise ValueError("no extractable text (scanned PDF without OCR?)")
-            meta = heuristic_metadata(doc, ref.filename)
-            meta = llm_metadata(doc, meta)
-            body = strip_back_matter(doc.text)
-            (ws.dir / "index" / f"ref_{ref.id}.txt").write_text(body, encoding="utf-8")
-            ref_tables.extend(doc.tables)
-            ref.title, ref.authors, ref.year = meta["title"], meta["authors"], meta["year"]
-            ref.venue, ref.doi = meta.get("venue", ""), meta.get("doi", "")
-            ref.pages, ref.chars, ref.status, ref.error = doc.pages, len(body), "parsed", ""
-            parsed_refs.append((ref, body))
-            ws.log(f"✓ {ref.title[:90]} — {ref.pages or '?'} pages, {len(body):,} characters")
+            to_describe.append((ref, doc))
         except Exception as exc:  # noqa: BLE001
             ref.status, ref.error = "failed", str(exc)
             ws.log(f"✗ Could not read {ref.filename}: {exc}")
 
-    labels = {}
+    def describe(item):
+        ref, doc = item
+        meta = heuristic_metadata(doc, ref.filename)
+        try:
+            meta = llm_metadata(doc, meta)
+        except Exception as exc:  # noqa: BLE001 - fallback: layout/PDF metadata only
+            ws.log(f"⚠ Metadata model call failed for {ref.filename} ({exc}); using layout metadata")
+        body = strip_back_matter(doc.text)
+        (ws.dir / "index" / f"ref_{ref.id}.txt").write_text(body, encoding="utf-8")
+        (ws.dir / "index" / f"ref_{ref.id}.tables.json").write_text(json.dumps(doc.tables[:10]), encoding="utf-8")
+        ref.title, ref.authors, ref.year = meta["title"], meta["authors"], meta["year"]
+        ref.venue, ref.doi = meta.get("venue", ""), meta.get("doi", "")
+        ref.pages, ref.chars, ref.status, ref.error = doc.pages, len(body), "parsed", ""
+
+        def save(proj: Project):  # per-reference checkpoint
+            proj.references = [ref if r.id == ref.id else r for r in proj.references]
+        store.mutate(ws.pid, save)
+        ws.log(f"✓ {ref.title[:90]} — {ref.pages or '?'} pages, {len(body):,} characters")
+        return ref, body, doc.tables
+
+    if to_describe:
+        with ThreadPoolExecutor(max_workers=llm.runtime.capacity) as pool:
+            for ref, body, tables in pool.map(describe, to_describe):
+                parsed_refs.append((ref, body))
+                ref_tables.extend(tables)
+        ws.cp.mark_corpus("parsing", signature(sorted(r.id for r, _ in parsed_refs)), f"{len(parsed_refs)} references read")
+
+    order = {r.id: i for i, r in enumerate(p.references)}
+    parsed_refs.sort(key=lambda x: order.get(x[0].id, 0))
+    chunks: list[Chunk] = []
     for i, (ref, body) in enumerate(parsed_refs, 1):
         label = f"R{i}"
-        labels[ref.id] = label
         pieces = chunk_text(body)
         ref.chunks = len(pieces)
         chunks += [Chunk(id=f"{label}-{j}", text=t, source_id=ref.id, source_kind="reference", label=label) for j, t in enumerate(pieces)]
-    (ws.dir / "index" / "ref_tables.json").write_text(json.dumps(ref_tables[:40]), encoding="utf-8")
-    store.mutate(ws.pid, lambda proj: setattr(proj, "references", p.references))
+    if not ref_tables and legacy_tables.exists():
+        ref_tables = json.loads(legacy_tables.read_text(encoding="utf-8"))
+    legacy_tables.write_text(json.dumps(ref_tables[:40]), encoding="utf-8")
+
+    def save_refs(proj: Project):
+        chunk_counts = {r.id: r.chunks for r, _ in parsed_refs}
+        for r in proj.references:
+            if r.id in chunk_counts:
+                r.chunks = chunk_counts[r.id]
+        failed = {r.id: r for r in p.references if r.status == "failed"}
+        proj.references = [failed.get(r.id, r) for r in proj.references]
+    store.mutate(ws.pid, save_refs)
 
     # ---- online research
     web = []
+    research_key = f"{p.title}|{p.topic}|{p.discipline}"
+    research_sig = signature(research_key)
+    p = ws.project
     if req.web_research:
-        jobs.emit(ws.pid, "stage", "Researching the topic online", stage="research")
-        queries = plan_queries(p, [r.title for r, _ in parsed_refs])
-        ws.log("Research queries: " + " | ".join(queries))
-        web = research.research(queries, p.discipline or p.topic, progress=ws.log)
-        web = rank_web_sources(web, f"{p.title} {p.topic}", limit=36)
-        ws.log(f"Kept {len(web)} relevant online sources after de-duplication and relevance ranking")
-    store.mutate(ws.pid, lambda proj: setattr(proj, "web_sources", web))
+        ws.begin_stage("research")
+        ws.stage("Researching the topic online", "research")
+        if p.web_sources and (ws.cp.corpus_done("research", research_sig) or p.options.get("research_key", research_key) == research_key):
+            web = p.web_sources
+            ws.log(f"↺ Reusing {len(web)} online sources found in an earlier run (change the title or topic to research again)")
+        else:
+            try:
+                queries = plan_queries(p, [r.title for r, _ in parsed_refs])
+                ws.log("Research queries: " + " | ".join(queries))
+                web = research.research(queries, p.discipline or p.topic, progress=ws.log)
+                web = rank_web_sources(web, f"{p.title} {p.topic}", limit=36)
+                ws.log(f"Kept {len(web)} relevant online sources after de-duplication and relevance ranking")
+            except Exception as exc:  # noqa: BLE001 - fallback: continue with the uploaded references only
+                log.exception("research failed")
+                ws.log(f"⚠ Online research failed ({type(exc).__name__}: {exc}); continuing with your references only")
+                web = []
+
+        def save_web(proj: Project):
+            proj.web_sources = web
+            proj.options = {**proj.options, "research_key": research_key}
+        store.mutate(ws.pid, save_web)
+        if web:
+            ws.cp.mark_corpus("research", research_sig, f"{len(web)} online sources")
     for i, w in enumerate(web, 1):
         label = f"W{i}"
         text = f"{w.title}. {w.abstract}"
         pieces = chunk_text(text, target_words=200) or [text[:1500]]
         chunks += [Chunk(id=f"{label}-{j}", text=t, source_id=w.id, source_kind="web", label=label) for j, t in enumerate(pieces[:4])]
 
-    jobs.emit(ws.pid, "stage", "Building the hybrid retrieval index", stage="indexing")
-    idx = HybridIndex()
-    info = idx.build(chunks)
-    idx.save(ws.dir / "index")
-    ws._index, ws._fp = idx, None
-    ws.log(f"Indexed {info['chunks']} passages · retrieval: {'neural embeddings + ' if info['neural'] else ''}BM25 + TF-IDF with rank fusion and MMR")
+    # ---- index
+    ws.begin_stage("indexing")
+    ws.stage("Building the hybrid retrieval index", "indexing")
+    index_sig = signature([c.id for c in chunks], len(chunks))
+    if ws.cp.corpus_done("indexing", index_sig) and (ws.dir / "index" / "index.pkl").exists():
+        ws._index = HybridIndex.load(ws.dir / "index")
+        ws._fp = None
+        ws.log(f"↺ Reusing the retrieval index ({len(ws._index.chunks)} passages)")
+    else:
+        idx = HybridIndex()
+        try:
+            info = idx.build(chunks)
+        except Exception as exc:  # noqa: BLE001 - fallback: lighter lexical index
+            ws.log(f"⚠ Full index failed ({exc}); building a lighter lexical index")
+            idx = HybridIndex()
+            info = idx.build([Chunk(**{**c.__dict__, "text": c.text[:1200]}) for c in chunks])
+        idx.save(ws.dir / "index")
+        ws._index, ws._fp = idx, None
+        ws.log(f"Indexed {info['chunks']} passages · retrieval: {'neural embeddings + ' if info['neural'] else ''}BM25 + TF-IDF with rank fusion and MMR")
+        ws.cp.mark_corpus("indexing", index_sig, f"index of {info['chunks']} passages")
 
     # ---- analysis
     if req.data_analysis and any(k in req.segments for k in ("methodology", "results", "discussion", "conclusion", "abstract", "appendices")):
-        jobs.emit(ws.pid, "stage", "Acquiring data and running statistical analysis", stage="analysis")
-        datasets = [ws.dir / "datasets" / f for f in p.dataset_files]
-        result = analysis_mod.run_analysis(ws.dir, p.title, p.topic, datasets, ref_tables, ws.log)
-        store.mutate(ws.pid, lambda proj: setattr(proj, "analysis", result))
-        ws.log(f"Analysis complete: {len(result.findings)} findings, {len(result.tables)} tables, {len(result.figures)} figures")
+        ws.begin_stage("analysis")
+        ws.stage("Acquiring data and running statistical analysis", "analysis")
+        p = ws.project
+        analysis_sig = signature(p.title, p.topic, p.dataset_files, sorted(r.id for r, _ in parsed_refs))
+        if ws.cp.corpus_done("analysis", analysis_sig) and p.analysis is not None:
+            ws.log(f"↺ Reusing the earlier analysis ({len(p.analysis.findings)} findings)")
+        else:
+            datasets = [ws.dir / "datasets" / f for f in p.dataset_files]
+            ok = True
+            try:
+                result = analysis_mod.run_analysis(ws.dir, p.title, p.topic, datasets, ref_tables, ws.log)
+            except Exception as exc:  # noqa: BLE001 - analysis is optional; never let it stop the article
+                log.exception("analysis failed")
+                ws.log(f"⚠ Data analysis could not be completed ({type(exc).__name__}: {exc}); continuing with an evidence synthesis instead")
+                result, ok = AnalysisResult(), False
+            store.mutate(ws.pid, lambda proj: setattr(proj, "analysis", result))
+            ws.log(f"Analysis complete: {len(result.findings)} findings, {len(result.tables)} tables, {len(result.figures)} figures")
+            if ok:
+                ws.cp.mark_corpus("analysis", analysis_sig, "data analysis")
 
 
 def plan_queries(p: Project, ref_titles: list[str]) -> list[str]:
@@ -175,45 +340,157 @@ def rank_web_sources(web, query: str, limit: int):
 def generate_article(pid: str, req: GenerateRequest) -> None:
     ws = Workspace(pid)
     keys = list(dict.fromkeys(req.segments))
-    evidence_segments = {"introduction", "literature_review", "methodology", "results", "discussion", "conclusion", "limitations"}
-    if evidence_segments & set(keys) and "references" not in keys:
+    if set(EVIDENCE_SEGMENTS) & set(keys) and "references" not in keys:
         keys.append("references")
         ws.log("References added automatically because the selected segments cite sources")
+    llm.runtime.configure(req.agents, notify=ws.log)
+    now = time.time()
 
     def init(p: Project):
         p.selected = keys
-        p.options = {**p.options, "web_research": req.web_research, "data_analysis": req.data_analysis, "depth": req.depth}
+        p.options = {**p.options, "web_research": req.web_research, "data_analysis": req.data_analysis, "depth": req.depth, "agents": req.agents}
+        for k, words in req.lengths.items():
+            if k in BLUEPRINTS:
+                p.segment_lengths[k] = clamp_length(k, words)
         p.stage = "processing"
         for k in keys:
-            if k not in p.segments or p.segments[k].status != "approved":
-                p.segments[k] = Segment(key=k, title=BLUEPRINTS[k].title, status="queued")
+            seg = p.segments.get(k)
+            keep = seg is not None and seg.content and (seg.status == "approved" or (req.resume and seg.status == "draft"))
+            if not keep:
+                p.segments[k] = Segment(key=k, title=BLUEPRINTS[k].title, status="queued", versions=seg.versions if seg else [])
+        if not req.resume or p.run.status in {"idle", "completed"}:
+            p.run = RunInfo(first_started=now)
+        p.run.status, p.run.session_started, p.run.finished = "running", now, None
+        p.run.sessions += 1
+        p.run.agents = req.agents
     store.mutate(pid, init)
+    if not req.resume:
+        for k in keys:
+            ws.cp.clear_segment(k)
+    ws.log(("▶ Resuming from the last checkpoint" if req.resume else "▶ Starting fabrication")
+           + f" · {req.agents} agent{'s' if req.agents > 1 else ''} · {req.depth} mode")
 
-    build_corpus(ws, req)
-    for key in generation_order(keys):
-        if ws.project.segments[key].status == "approved":
-            continue
-        write_segment(ws, key, req.depth)
-    store.mutate(pid, lambda p: setattr(p, "stage", "studio"))
-    jobs.emit(pid, "done", "All selected segments are drafted and ready for review")
+    try:
+        build_corpus(ws, req)
+        ws.begin_stage("writing")
+        run_segments(ws, keys, req.depth, req.agents)
+    except Exception:
+        _stop_run(ws, keys, "stopped")
+        raise
+    _stop_run(ws, keys, "completed")
+    p = ws.project
+    failed = [s.title for k, s in p.segments.items() if k in keys and s.status == "failed"]
+    if failed:
+        jobs.emit(pid, "log", f"⚠ Finished with {len(failed)} segment(s) needing attention: {', '.join(failed)} — use Regenerate in the Studio")
+    store.mutate(pid, lambda proj: setattr(proj, "stage", "studio"))
+    elapsed = p.run.elapsed_before
+    jobs.emit(pid, "done", f"All selected segments are drafted and ready for review · total time {int(elapsed // 3600)}h {int(elapsed % 3600 // 60)}m {int(elapsed % 60)}s")
+
+
+def _stop_run(ws: Workspace, keys: list[str], status: str) -> None:
+    now = time.time()
+
+    def apply(p: Project):
+        _close_stages(p.run, now)
+        for key, started in list(p.run.segment_started.items()):
+            p.run.segment_seconds[key] = round(p.run.segment_seconds.get(key, 0) + now - started, 1)
+        p.run.segment_started = {}
+        if p.run.session_started:
+            p.run.elapsed_before = round(p.run.elapsed_before + now - p.run.session_started, 1)
+        p.run.session_started = None
+        p.run.status = status
+        if status == "completed":
+            p.run.finished = now
+        for k in keys:
+            if k in p.segments and p.segments[k].status == "working":
+                p.segments[k].status = "queued"   # resumable from its checkpoints
+    store.mutate(ws.pid, apply)
+
+
+def run_segments(ws: Workspace, keys: list[str], depth: str, agents: int) -> None:
+    """Dependency-aware scheduler: up to `agents` segments are written at the same time."""
+    selected = set(keys)
+    pending = [k for k in generation_order(keys)]
+    running: dict = {}
+    lanes = list(range(1, agents + 1))
+
+    def deps_of(key: str) -> list[str]:
+        if key == "references":
+            return [k for k in keys if k in EVIDENCE_SEGMENTS]
+        return [d for d in BLUEPRINTS[key].depends_on if d in selected]
+
+    def job(key: str, lane: int) -> None:
+        _lane.value = lane
+        try:
+            write_segment(ws, key, depth)
+        finally:
+            _lane.value = 0
+
+    with ThreadPoolExecutor(max_workers=agents) as pool:
+        while pending or running:
+            segs = ws.project.segments
+            settled = {k for k in keys if segs.get(k) and (segs[k].status in {"failed", "approved"} or (segs[k].status == "draft" and segs[k].content))}
+            for key in list(pending):
+                if key in settled:
+                    pending.remove(key)
+                    ws.log(f"↺ Keeping the existing {segs[key].status} of {segs[key].title}")
+                    continue
+                if not lanes:
+                    break
+                if all(d in settled for d in deps_of(key)):
+                    pending.remove(key)
+                    lane = lanes.pop(0)
+                    running[pool.submit(job, key, lane)] = (key, lane)
+            if not running:
+                if not pending:
+                    break
+                key = pending.pop(0)   # unresolvable dependency (should not happen): write it anyway
+                lane = lanes.pop(0)
+                running[pool.submit(job, key, lane)] = (key, lane)
+            done, _ = wait(list(running), return_when=FIRST_COMPLETED)
+            for fut in done:
+                key, lane = running.pop(fut)
+                lanes.append(lane)
+                lanes.sort()
+                fut.result()
 
 
 def write_segment(ws: Workspace, key: str, depth: str = "thorough") -> None:
+    """Write one segment with a fallback ladder: requested depth → quick → single-pass emergency draft."""
     bp = BLUEPRINTS[key]
-    jobs.emit(ws.pid, "stage", f"Writing: {bp.title}", stage="writing", key=key)
+    ws.stage(f"Writing: {bp.title}", "writing", key=key)
     ws.set_segment(key, status="working", error="")
+    ws.segment_clock(key, True)
+    attempts = [depth] + (["quick"] if depth == "thorough" else []) + ["emergency"]
     try:
-        builder = {
-            "title": build_title, "abstract": build_abstract, "keywords": build_keywords, "references": build_references,
-            "appendices": build_appendices, "literature_review": build_literature_review, "methodology": build_methodology,
-            "results": build_results,
-        }.get(bp.special or key, build_generic)
-        content, evidence, extras = builder(ws, bp, depth)
-        finalize(ws, key, content, evidence, reason="initial draft", depth=depth, **extras)
-    except Exception as exc:  # noqa: BLE001
-        log.exception("segment %s failed", key)
-        ws.set_segment(key, status="failed", error=str(exc))
-        ws.log(f"{bp.title} failed: {exc}")
+        for n, mode in enumerate(attempts):
+            try:
+                if mode == "emergency":
+                    if bp.special in {"references", "appendices", "keywords", "title"}:
+                        raise RuntimeError("no emergency builder for this segment")
+                    ws.log(f"⚠ {bp.title}: using the single-pass emergency draft")
+                    content, evidence, extras = build_emergency(ws, bp)
+                else:
+                    builder = {
+                        "title": build_title, "abstract": build_abstract, "keywords": build_keywords, "references": build_references,
+                        "appendices": build_appendices, "literature_review": build_literature_review, "methodology": build_methodology,
+                        "results": build_results,
+                    }.get(bp.special or key, build_generic)
+                    content, evidence, extras = builder(ws, bp, mode)
+                if not content.strip():
+                    raise RuntimeError("the model returned an empty draft")
+                finalize(ws, key, content, evidence, reason="initial draft" if n == 0 else f"initial draft ({mode} fallback)", depth=mode, **extras)
+                ws.cp.clear_segment(key)
+                return
+            except Exception as exc:  # noqa: BLE001
+                log.exception("segment %s failed in %s mode", key, mode)
+                if n + 1 < len(attempts):
+                    ws.log(f"⚠ {bp.title} hit a problem in {mode} mode ({type(exc).__name__}: {str(exc)[:160]}); falling back to {attempts[n + 1]} mode — saved progress is kept")
+                else:
+                    ws.set_segment(key, status="failed", error=str(exc))
+                    ws.log(f"✗ {bp.title} could not be written: {exc}")
+    finally:
+        ws.segment_clock(key, False)
 
 
 def finalize(ws: Workspace, key: str, content: str, evidence: str, reason: str, depth: str = "thorough",
@@ -224,18 +501,21 @@ def finalize(ws: Workspace, key: str, content: str, evidence: str, reason: str, 
     rewritten, overlap, flagged = 0, 0.0, 0
     if not skip_guard:
         content = originality.destyle(content)
-        jobs.emit(ws.pid, "stage", f"Originality & integrity checks: {bp.title}", stage="guard", key=key)
-        content, check, rewritten = originality.enforce(content, ws.fingerprint, progress=ws.log, rounds=2 if depth == "thorough" else 1)
-        overlap, flagged = check.overlap, len(check.flagged)
+        ws.stage(f"Originality & integrity checks: {bp.title}", "guard", key=key)
+        try:
+            content, check, rewritten = originality.enforce(content, ws.fingerprint, progress=ws.log, rounds=2 if depth == "thorough" else 1)
+            overlap, flagged = check.overlap, len(check.flagged)
+        except Exception as exc:  # noqa: BLE001 - fallback: keep the draft, report that the guard did not finish
+            ws.log(f"⚠ Originality guard could not finish for {bp.title} ({exc}); please re-run a tool on this segment later")
     words = len(re.sub(r"\[\[.*?\]\]|\[[RW]\d+.*?\]", "", content).split())
     q = QualityReport(
-        words=words, target_words=int(p.target_words * bp.word_share), ngram_overlap=round(overlap, 4),
+        words=words, target_words=segment_words(p, key) if bp.word_share or key == "abstract" else 0, ngram_overlap=round(overlap, 4),
         flagged_sentences=flagged, rewritten_sentences=rewritten, readability=originality.readability(content) if words > 80 else None,
         citations=len(citations.MARKER.findall(content)),
         unverified_numbers=[] if skip_guard else originality.unverified_numbers(content, evidence),
     )
     seg = p.segments.get(key) or Segment(key=key, title=bp.title)
-    fields = {"content": content, "quality": q, "status": "draft", "versions": [*seg.versions, Version(content=content, reason=reason)][-20:]}
+    fields = {"content": content, "quality": q, "status": "draft", "error": "", "versions": [*seg.versions, Version(content=content, reason=reason)][-20:]}
     if figures is not None:
         fields["figures"] = figures
     if tables is not None:
@@ -267,7 +547,6 @@ def retrieve(ws: Workspace, queries: list[str], k_each: int = 5, cap: int = 10) 
             if c.id not in seen:
                 seen.add(c.id)
                 out.append(c)
-    # Interleave so that different queries (and sources) are represented before the cap.
     return out[:cap]
 
 
@@ -343,41 +622,87 @@ def critique_and_refine(ws: Workspace, bp: Blueprint, text: str, evidence: str) 
         return text
     issues = "\n".join(f"- Unmet requirement: {q}" for q in failed) + "\n" + "\n".join(f"- {w}" for w in weaknesses)
     words = len(text.split())
-    revised = llm.generate(
-        AUTHOR_SYSTEM,
-        f"Revise the '{bp.title}' section below to fix the reviewer's issues.\n\nISSUES:\n{issues}\n\n"
-        f"SECTION:\n{text}\n\nSUPPORTING EVIDENCE (use only if needed to fix unsupported claims):\n{evidence[:6000]}\n\n"
-        f"RULES:\n{rules_text(bp)}\n- Keep every citation marker that remains relevant, keep lines like [[TABLE 1]] or [[FIGURE 1]] unchanged.\n"
-        f"- Keep roughly the same length (~{words} words).\nOutput only the revised section.",
-        temperature=0.6, max_tokens=int(words * 2.2) + 400,
-    )
+    try:
+        revised = llm.generate(
+            AUTHOR_SYSTEM,
+            f"Revise the '{bp.title}' section below to fix the reviewer's issues.\n\nISSUES:\n{issues}\n\n"
+            f"SECTION:\n{text}\n\nSUPPORTING EVIDENCE (use only if needed to fix unsupported claims):\n{evidence[:6000]}\n\n"
+            f"RULES:\n{rules_text(bp)}\n- Keep every citation marker that remains relevant, keep lines like [[TABLE 1]] or [[FIGURE 1]] unchanged.\n"
+            f"- Keep roughly the same length (~{words} words).\nOutput only the revised section.",
+            temperature=0.6, max_tokens=int(words * 2.2) + 400,
+        )
+    except llm.LLMError as exc:  # fallback: keep the unrefined draft
+        ws.log(f"⚠ Refinement of {bp.title} skipped ({exc}); keeping the reviewed draft")
+        return text
     return revised if len(revised.split()) > words * 0.6 else text
 
 
 def run_moves(ws: Workspace, bp: Blueprint, moves: list[Move], total_words: int, depth: str, extra_context: str = "",
               extra_evidence: str = "") -> tuple[str, str]:
+    """Draft a segment move by move. Research agents prepare evidence notes for later moves while the writing agent
+    drafts earlier ones; every note, draft and the refinement is checkpointed."""
     p = ws.project
+    cp, key, n = ws.cp, bp.key, len(moves)
     subs = {"title": p.title, "topic": p.topic or p.title}
-    body, evidence_log = "", [extra_evidence]
     share_sum = sum(m.share for m in moves) or 1
+    evidence_log = [extra_evidence]
+    plans = []
     for i, move in enumerate(moves, 1):
-        jobs.emit(ws.pid, "stage", f"{bp.title} · move {i}/{len(moves)}: {move.name}", stage="writing", key=bp.key, move=move.name)
-        words = max(90, int(total_words * move.share / share_sum))
-        queries = [q.format(**subs) for q in move.queries] or []
-        material = ""
-        if queries and bp.needs_evidence:
-            chunks = retrieve(ws, queries + [f"{move.name} {p.title}"], k_each=4, cap=10)
-            ws.log(f"Retrieved {len(chunks)} passages from {len({c.source_id for c in chunks})} sources for “{move.name}”")
-            ev = evidence_block(chunks, p)
-            evidence_log.append(ev)
-            material = take_notes(ws, bp, move, chunks) if depth == "thorough" else ev
-        if extra_evidence:
-            material = f"{material}\n\n{extra_evidence}".strip()
-        para = draft_move(ws, bp, move, material or "(No external evidence needed; rely on the article context.)", words, body, extra_context)
-        body = f"{body}\n\n{para.strip()}".strip()
+        queries = [q.format(**subs) for q in move.queries]
+        chunks = retrieve(ws, queries + [f"{move.name} {p.title}"], k_each=4, cap=10) if queries and bp.needs_evidence else []
+        ev = evidence_block(chunks, p) if chunks else ""
+        evidence_log.append(ev)
+        plans.append({"i": i, "move": move, "chunks": chunks, "ev": ev, "words": max(90, int(total_words * move.share / share_sum))})
+
+    lane = getattr(_lane, "value", 0)
+
+    def notes_task(plan):
+        _lane.value = lane
+        step = f"notes:{plan['i']}"
+        cached = cp.get(key, total_words, step)
+        if cached is not None:
+            return cached
+        ws.stage(f"{bp.title} · researching move {plan['i']}/{n}: {plan['move'].name}", "writing", key=key, move=plan["move"].name)
+        notes = take_notes(ws, bp, plan["move"], plan["chunks"])
+        cp.put(key, total_words, step, notes, label=f"{bp.title} · notes for move {plan['i']}/{n}")
+        return notes
+
+    body = ""
+    with ThreadPoolExecutor(max_workers=max(1, llm.runtime.capacity)) as pool:
+        futures = {}
+        if depth == "thorough":
+            for plan in plans:
+                if plan["chunks"] and cp.get(key, total_words, f"draft:{plan['i']}") is None:
+                    futures[plan["i"]] = pool.submit(notes_task, plan)
+        for plan in plans:
+            i, move = plan["i"], plan["move"]
+            draft = cp.get(key, total_words, f"draft:{i}")
+            if draft is not None:
+                ws.log(f"↺ {bp.title} · move {i}/{n} restored from checkpoint")
+            else:
+                ws.stage(f"{bp.title} · move {i}/{n}: {move.name}", "writing", key=key, move=move.name)
+                material = plan["ev"]
+                if i in futures:
+                    try:
+                        material = futures[i].result()
+                    except Exception as exc:  # noqa: BLE001 - fallback: draft straight from the evidence
+                        ws.log(f"⚠ Notes for “{move.name}” failed ({exc}); drafting directly from the evidence")
+                if extra_evidence:
+                    material = f"{material}\n\n{extra_evidence}".strip()
+                draft = draft_move(ws, bp, move, material or "(No external evidence needed; rely on the article context.)", plan["words"], body, extra_context).strip()
+                cp.put(key, total_words, f"draft:{i}", draft, label=f"{bp.title} · move {i}/{n} drafted")
+            body = f"{body}\n\n{draft}".strip()
+
     evidence = "\n\n".join(evidence_log)
-    if depth == "thorough":
-        body = critique_and_refine(ws, bp, body, evidence)
+    if depth == "thorough" and bp.checks:
+        refined = cp.get(key, total_words, "refined")
+        if refined is not None:
+            ws.log(f"↺ {bp.title} · peer-reviewed version restored from checkpoint")
+            body = refined
+        else:
+            ws.stage(f"{bp.title} · peer review & refinement", "writing", key=key)
+            body = critique_and_refine(ws, bp, body, evidence)
+            cp.put(key, total_words, "refined", body, label=f"{bp.title} · peer-reviewed")
     return body, evidence
 
 
@@ -387,13 +712,39 @@ def build_generic(ws: Workspace, bp: Blueprint, depth: str):
     ctx = article_context(p, bp.depends_on)
     findings = findings_text(p.analysis) if bp.key in {"discussion", "conclusion", "limitations"} else ""
     extra_ctx = f"ARTICLE CONTEXT:\n{ctx}" if ctx else ""
-    body, evidence = run_moves(ws, bp, list(bp.moves), int(p.target_words * bp.word_share), depth, extra_ctx, findings)
+    body, evidence = run_moves(ws, bp, list(bp.moves), segment_words(p, bp.key), depth, extra_ctx, findings)
     return body, evidence + "\n" + ctx, {}
+
+
+def build_emergency(ws: Workspace, bp: Blueprint):
+    """Last-resort fallback: one retrieval and one model call for the whole segment."""
+    p = ws.project
+    words = segment_words(p, bp.key) or 400
+    chunks = retrieve(ws, [f"{bp.title} {p.title}", p.topic or p.title], k_each=6, cap=10) if bp.needs_evidence and ws.index.chunks else []
+    ev = evidence_block(chunks, p, max_words=120) if chunks else ""
+    ctx = article_context(p, bp.depends_on, 250)
+    text = llm.generate(
+        AUTHOR_SYSTEM,
+        f"ARTICLE TITLE: {p.title}\nTOPIC: {p.topic}\nSECTION: {bp.title}\nPURPOSE: {bp.description}\n\n"
+        + (f"ARTICLE CONTEXT:\n{ctx}\n\n" if ctx else "") + (f"EVIDENCE:\n{ev}\n\n" if ev else "") + f"{findings_text(p.analysis)}\n\n"
+        f"RULES:\n{rules_text(bp)}\n\nWrite the complete section in about {words} words. Output only the prose.",
+        temperature=0.65, max_tokens=int(words * 2.2) + 300,
+    )
+    if bp.key == "abstract":
+        text = citations.MARKER.sub("", text)
+    return text.strip(), ev + ctx + findings_text(p.analysis), {}
 
 
 def build_literature_review(ws: Workspace, bp: Blueprint, depth: str):
     p = ws.project
-    themes = discover_themes(ws)
+    words = segment_words(p, bp.key)
+    themes = ws.cp.get(bp.key, words, "themes")
+    if themes is None:
+        ws.stage("Review of Literature · discovering themes in the corpus", "writing", key=bp.key)
+        themes = discover_themes(ws)
+        ws.cp.put(bp.key, words, "themes", themes, label="Review of Literature · themes identified")
+    else:
+        ws.log("↺ Literature themes restored from checkpoint")
     ws.log("Literature themes identified: " + "; ".join(t["name"] for t in themes))
     moves = list(bp.moves)
     for t in themes:
@@ -403,8 +754,7 @@ def build_literature_review(ws: Workspace, bp: Blueprint, depth: str):
     moves.append(Move("Synthesis and research gap", "Integrate the themes into an overall picture, identify precisely what remains unknown or contested, and explain how this article addresses that gap." + hypotheses,
                       (f"research gap {p.topic or p.title}", f"future research needed {p.title}"), 0.2))
     ctx = article_context(p, ("introduction",), 350)
-    body, evidence = run_moves(ws, bp, moves, int(p.target_words * bp.word_share), depth, f"ARTICLE CONTEXT:\n{ctx}" if ctx else "")
-    # Sub-headings for themes make long reviews navigable: insert them as '### ' lines is avoided (destyle strips).
+    body, evidence = run_moves(ws, bp, moves, words, depth, f"ARTICLE CONTEXT:\n{ctx}" if ctx else "")
     return body, evidence, {"notes": [f"Theme: {t['name']}" for t in themes]}
 
 
@@ -480,7 +830,7 @@ def build_methodology(ws: Workspace, bp: Blueprint, depth: str):
     moves = list(bp.moves)
     if not (p.analysis and p.analysis.datasets):
         moves = [m if m.name != "Variables and measurement" else Move("Analytical framework", "Describe the coding and thematic synthesis procedure: screening, full-text reading, coding, theme development and cross-source comparison.", (), 0.2) for m in moves]
-    body, evidence = run_moves(ws, bp, moves, int(p.target_words * bp.word_share), depth, f"{protocol}\n\nARTICLE CONTEXT:\n{ctx}", protocol)
+    body, evidence = run_moves(ws, bp, moves, segment_words(p, bp.key), depth, f"{protocol}\n\nARTICLE CONTEXT:\n{ctx}", protocol)
     return body, evidence, {}
 
 
@@ -491,38 +841,47 @@ def build_results(ws: Workspace, bp: Blueprint, depth: str):
     if not (a and a.findings):
         return build_synthesis_results(ws, bp, depth, ctx)
 
+    total = segment_words(p, bp.key)
+    cp = ws.cp
     groups = list(dict.fromkeys([d["name"] for d in a.datasets]))
-    total = int(p.target_words * bp.word_share)
-    body_parts = []
-    intro = llm.generate(
-        AUTHOR_SYSTEM,
-        f"Article: {p.title}\n{ctx}\n\n{findings_text(a)}\n\nWrite one short opening paragraph (60–90 words) for the Results section "
-        "that tells the reader what analyses are reported and in what order. No numbers yet, no interpretation. Output only the paragraph.",
-        temperature=0.6, max_tokens=250,
-    )
-    body_parts.append(intro.strip())
-    for g in groups:
-        jobs.emit(ws.pid, "stage", f"Results · reporting “{g}”", stage="writing", key="results")
-        g_findings = [f for f in a.findings if f.startswith(f"[{g}]")]
+    intro = cp.get(bp.key, total, "results:intro")
+    if intro is None:
+        intro = llm.generate(
+            AUTHOR_SYSTEM,
+            f"Article: {p.title}\n{ctx}\n\n{findings_text(a)}\n\nWrite one short opening paragraph (60–90 words) for the Results section "
+            "that tells the reader what analyses are reported and in what order. No numbers yet, no interpretation. Output only the paragraph.",
+            temperature=0.6, max_tokens=250,
+        ).strip()
+        cp.put(bp.key, total, "results:intro", intro, label="Results · opening paragraph")
+    body_parts = [intro]
+    for gi, g in enumerate(groups, 1):
         g_tables = [t for t in a.tables if t.group == g]
         g_figs = [f for f in a.figures if f.group == g]
-        items = "\n".join([f"- Table {t.number}: {t.caption}" for t in g_tables] + [f"- Figure {f.number}: {f.caption}" for f in g_figs])
-        para = llm.generate(
-            AUTHOR_SYSTEM,
-            f"Article: {p.title}\nSECTION: Results — {g}\n\nFINDINGS (use numbers exactly as written, never add others):\n"
-            + "\n".join(f"- {f.split('] ', 1)[-1]}" for f in g_findings)
-            + f"\n\nTABLES AND FIGURES AVAILABLE:\n{items or '(none)'}\n\nRULES:\n{rules_text(bp)}\n\n"
-            f"Write about {max(150, total // max(1, len(groups)))} words reporting these findings objectively. Refer to each table and figure by number "
-            "('Table 2 summarises…', '(see Figure 1)'). Report test statistic, p-value and effect size together. No citations, no interpretation. Output only prose.",
-            temperature=0.55, max_tokens=int(total * 2) + 300,
-        )
-        block = para.strip() + "\n\n" + "\n\n".join([f"[[TABLE {t.number}]]" for t in g_tables] + [f"[[FIGURE {f.number}]]" for f in g_figs])
+        para = cp.get(bp.key, total, f"results:{gi}")
+        if para is None:
+            ws.stage(f"Results · reporting “{g}”", "writing", key="results")
+            g_findings = [f for f in a.findings if f.startswith(f"[{g}]")]
+            items = "\n".join([f"- Table {t.number}: {t.caption}" for t in g_tables] + [f"- Figure {f.number}: {f.caption}" for f in g_figs])
+            para = llm.generate(
+                AUTHOR_SYSTEM,
+                f"Article: {p.title}\nSECTION: Results — {g}\n\nFINDINGS (use numbers exactly as written, never add others):\n"
+                + "\n".join(f"- {f.split('] ', 1)[-1]}" for f in g_findings)
+                + f"\n\nTABLES AND FIGURES AVAILABLE:\n{items or '(none)'}\n\nRULES:\n{rules_text(bp)}\n\n"
+                f"Write about {max(150, total // max(1, len(groups)))} words reporting these findings objectively. Refer to each table and figure by number "
+                "('Table 2 summarises…', '(see Figure 1)'). Report test statistic, p-value and effect size together. No citations, no interpretation. Output only prose.",
+                temperature=0.55, max_tokens=int(total * 2) + 300,
+            ).strip()
+            cp.put(bp.key, total, f"results:{gi}", para, label=f"Results · {g}")
+        block = para + "\n\n" + "\n\n".join([f"[[TABLE {t.number}]]" for t in g_tables] + [f"[[FIGURE {f.number}]]" for f in g_figs])
         body_parts.append(block.strip())
     body = "\n\n".join(body_parts)
     evidence = findings_text(a) + "\n" + "\n".join(f"{t.caption} {t.note} " + " ".join(" ".join(r) for r in t.rows) for t in a.tables)
     if depth == "thorough":
-        body = critique_and_refine(ws, bp, body, evidence)
-        body = _restore_placeholders(body, a)
+        refined = cp.get(bp.key, total, "refined")
+        if refined is None:
+            refined = _restore_placeholders(critique_and_refine(ws, bp, body, evidence), a)
+            cp.put(bp.key, total, "refined", refined, label="Results · peer-reviewed")
+        body = refined
     return body, evidence, {"figures": a.figures, "tables": a.tables}
 
 
@@ -538,40 +897,53 @@ def _restore_placeholders(body: str, a: AnalysisResult) -> str:
 
 def build_synthesis_results(ws: Workspace, bp: Blueprint, depth: str, ctx: str):
     p = ws.project
+    total = segment_words(p, bp.key)
+    cp = ws.cp
     ws.log("No numerical dataset available — reporting a structured evidence synthesis instead of statistics")
     chunks = retrieve(ws, [f"findings results {p.title}", f"empirical evidence {p.topic}", f"outcomes effects {p.title}", f"key conclusions {p.topic}"], k_each=5, cap=16)
     ev = evidence_block(chunks, p, max_words=140)
-    data = llm.generate_json(
-        "You build evidence-synthesis tables for systematic reviews. Reply with JSON only.",
-        f"Article: {p.title}\n\nEVIDENCE:\n{ev}\n\nGroup the evidence into 3–6 findings themes. For each give: theme (short), "
-        "principal_evidence (one paraphrased sentence, include numbers only if printed in the evidence), direction "
-        "(Supportive / Mixed / Contradictory), sources (list of labels like R1). JSON: {\"rows\": [{...}]}",
-        default={}, max_tokens=1200,
-    )
-    rows = [r for r in (data.get("rows") or []) if isinstance(r, dict) and r.get("theme")][:6]
+    rows = cp.get(bp.key, total, "synthesis:rows")
+    if rows is None:
+        ws.stage("Results · building the evidence-synthesis table", "writing", key="results")
+        data = llm.generate_json(
+            "You build evidence-synthesis tables for systematic reviews. Reply with JSON only.",
+            f"Article: {p.title}\n\nEVIDENCE:\n{ev}\n\nGroup the evidence into 3–6 findings themes. For each give: theme (short), "
+            "principal_evidence (one paraphrased sentence, include numbers only if printed in the evidence), direction "
+            "(Supportive / Mixed / Contradictory), sources (list of labels like R1). JSON: {\"rows\": [{...}]}",
+            default={}, max_tokens=1200,
+        )
+        rows = [r for r in (data.get("rows") or []) if isinstance(r, dict) and r.get("theme")][:6]
+        cp.put(bp.key, total, "synthesis:rows", rows, label="Results · synthesis table")
     labels = citations.label_map(p)
     table = Table(number=1, caption="Synthesis of principal findings across the reviewed evidence", columns=["Theme", "Principal evidence", "Direction", "Sources"],
                   rows=[[str(r.get("theme")), str(r.get("principal_evidence", "")), str(r.get("direction", "")),
                          "; ".join(citations.short_label(labels[l]) for l in r.get("sources", []) if isinstance(l, str) and l in labels)] for r in rows],
                   note="Direction indicates whether the balance of evidence supports, partly supports, or contradicts the theme.", group="synthesis")
-    moves = [Move("Evidence synthesis", "Report the findings theme by theme, stating the pattern of evidence, its consistency across sources, and the strength of support. Refer to Table 1. Do not interpret implications yet.", (), 1.0)]
-    material = take_notes(ws, bp, moves[0], chunks) if depth == "thorough" else ev
-    material += "\n\nSYNTHESIS TABLE ROWS:\n" + "\n".join(" | ".join(r) for r in table.rows)
-    body = draft_move(ws, bp, moves[0], material, int(p.target_words * bp.word_share), "", f"ARTICLE CONTEXT:\n{ctx}")
-    body = body.strip() + "\n\n[[TABLE 1]]"
+    move = Move("Evidence synthesis", "Report the findings theme by theme, stating the pattern of evidence, its consistency across sources, and the strength of support. Refer to Table 1. Do not interpret implications yet.", (), 1.0)
+    body = cp.get(bp.key, total, "synthesis:body")
+    if body is None:
+        material = cp.get(bp.key, total, "notes:1")
+        if material is None and depth == "thorough":
+            material = take_notes(ws, bp, move, chunks)
+            cp.put(bp.key, total, "notes:1", material, label="Results · evidence notes")
+        material = (material or ev) + "\n\nSYNTHESIS TABLE ROWS:\n" + "\n".join(" | ".join(r) for r in table.rows)
+        ws.stage("Results · drafting the synthesis", "writing", key="results")
+        body = draft_move(ws, bp, move, material, total, "", f"ARTICLE CONTEXT:\n{ctx}").strip() + ("\n\n[[TABLE 1]]" if table.rows else "")
+        cp.put(bp.key, total, "synthesis:body", body, label="Results · synthesis drafted")
     return body, ev, {"tables": [table] if table.rows else [], "figures": []}
 
 
 def build_abstract(ws: Workspace, bp: Blueprint, depth: str):
     p = ws.project
+    words = segment_words(p, bp.key)
     ctx = article_context(p, ("introduction", "methodology", "results", "discussion", "conclusion"), 380)
     if not ctx:
         ctx = findings_text(p.analysis) or f"Topic: {p.topic}"
     text = llm.generate(
         AUTHOR_SYSTEM,
         f"ARTICLE TITLE: {p.title}\n\n{ctx}\n\n{findings_text(p.analysis)}\n\nRULES:\n{rules_text(bp)}\n\n"
-        "Write the abstract now as one paragraph of 180–250 words. No citations, no headings. Output only the abstract.",
-        temperature=0.6, max_tokens=700,
+        f"Write the abstract now as one paragraph of about {words} words. No citations, no headings. Output only the abstract.",
+        temperature=0.6, max_tokens=int(words * 2.2) + 200,
     )
     text = citations.MARKER.sub("", text).replace("  ", " ").replace(" .", ".")
     return text.strip(), ctx + findings_text(p.analysis), {}
@@ -665,11 +1037,12 @@ TOOL_INSTRUCTIONS = {
 
 def revise_segment(pid: str, key: str, instruction: str, selection: str = "", reason: str = "revision") -> None:
     ws = Workspace(pid)
+    llm.runtime.notify = ws.log
     bp = BLUEPRINTS[key]
     p = ws.project
     seg = p.segments[key]
     ws.set_segment(key, status="revising")
-    jobs.emit(pid, "stage", f"Revising {bp.title}", stage="revising", key=key)
+    ws.stage(f"Revising {bp.title}", "revising", key=key)
     try:
         if bp.special in {"references"}:
             content, evidence, extras = build_references(ws, bp, "quick")
@@ -711,7 +1084,10 @@ def revise_segment(pid: str, key: str, instruction: str, selection: str = "", re
 
 def regenerate_segment(pid: str, key: str) -> None:
     ws = Workspace(pid)
-    write_segment(ws, key, ws.project.options.get("depth", "thorough"))
+    p = ws.project
+    llm.runtime.configure(int(p.options.get("agents", 1)), notify=ws.log)
+    ws.cp.clear_segment(key)
+    write_segment(ws, key, p.options.get("depth", "thorough"))
 
 
 def manual_edit(pid: str, key: str, content: str) -> Project:
@@ -721,7 +1097,27 @@ def manual_edit(pid: str, key: str, content: str) -> Project:
     q = seg.quality.model_copy()
     q.words = len(content.split())
     q.citations = len(citations.MARKER.findall(content))
-    if ws.index.chunks and BLUEPRINTS[key].special not in {"references", "title", "keywords", "appendices"}:
+    if BLUEPRINTS[key].special not in {"references", "title", "keywords", "appendices"} and ws.index.chunks:
         chk = originality.check(content, ws.fingerprint)
         q.ngram_overlap, q.flagged_sentences = round(chk.overlap, 4), len(chk.flagged)
-    return ws.set_segment(key, content=content, quality=q, status="draft", versions=[*seg.versions, Version(content=content, reason="manual edit")][-20:])
+    return ws.set_segment(key, content=content, quality=q, status="draft", error="", versions=[*seg.versions, Version(content=content, reason="manual edit")][-20:])
+
+
+def recover_interrupted_runs() -> None:
+    """On server start, turn runs that were cut off (server stopped mid-fabrication) into resumable 'stopped' runs."""
+    for p in store.list_all():
+        if p.run.status != "running":
+            continue
+
+        def apply(proj: Project):
+            end = proj.updated
+            if proj.run.session_started:
+                proj.run.elapsed_before = round(proj.run.elapsed_before + max(0.0, end - proj.run.session_started), 1)
+            _close_stages(proj.run, end)
+            for key, started in list(proj.run.segment_started.items()):
+                proj.run.segment_seconds[key] = round(proj.run.segment_seconds.get(key, 0) + max(0.0, end - started), 1)
+            proj.run.segment_started, proj.run.session_started, proj.run.status = {}, None, "stopped"
+            for seg in proj.segments.values():
+                if seg.status in {"working", "revising"}:
+                    seg.status = "queued" if not seg.content else "draft"
+        store.mutate(p.id, apply)

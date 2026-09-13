@@ -120,8 +120,26 @@ class Project(BaseModel):
     segments: dict[str, Segment] = {}
     analysis: AnalysisResult | None = None
     options: dict = Field(default_factory=lambda: {"web_research": True, "data_analysis": True})
+    segment_lengths: dict[str, int] = {}          # user-chosen word targets per segment
+    run: "RunInfo" = Field(default_factory=lambda: RunInfo())
     stage: Literal["setup", "references", "segments", "processing", "studio", "published"] = "setup"
     log: list[dict] = []
+
+
+class RunInfo(BaseModel):
+    """Fabrication timer. Time accumulates across resumed sessions."""
+    status: Literal["idle", "running", "stopped", "completed"] = "idle"
+    first_started: float | None = None
+    session_started: float | None = None
+    elapsed_before: float = 0.0                   # seconds from earlier sessions of this run
+    finished: float | None = None
+    sessions: int = 0
+    stages: dict[str, float] = {}                 # stage -> seconds spent
+    stage_started: dict[str, float] = {}          # stage -> start time of the open interval
+    segment_seconds: dict[str, float] = {}
+    segment_started: dict[str, float] = {}
+    agents: int = 1
+    checkpoints: int = 0
 
 
 class ProjectCreate(BaseModel):
@@ -140,6 +158,13 @@ class GenerateRequest(BaseModel):
     web_research: bool = True
     data_analysis: bool = True
     depth: Literal["quick", "thorough"] = "thorough"
+    agents: int = Field(default=1, ge=1, le=3)    # 1 solo · 2 duo · 3 trio
+    lengths: dict[str, int] = {}
+    resume: bool = False                          # continue from checkpoints instead of rewriting drafts
+
+
+class LengthsUpdate(BaseModel):
+    lengths: dict[str, int]
 
 
 class ReviseRequest(BaseModel):
@@ -154,3 +179,6 @@ class ToolRequest(BaseModel):
 
 class ManualEdit(BaseModel):
     content: str
+
+
+Project.model_rebuild()

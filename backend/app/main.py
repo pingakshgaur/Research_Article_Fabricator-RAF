@@ -14,10 +14,18 @@ from . import jobs, llm, publisher, store, writer
 from .blueprints import BLUEPRINTS, catalogue
 from .config import settings
 from .ingest import SUPPORTED
-from .models import GenerateRequest, ManualEdit, Project, ProjectCreate, Reference, ReviseRequest, ToolRequest
+from .models import GenerateRequest, LengthsUpdate, ManualEdit, Project, ProjectCreate, Reference, ReviseRequest, Segment, ToolRequest
+
+# Bump whenever the backend changes in a way the UI depends on; the UI warns when the running server is older.
+API_VERSION = "1.2.0"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-app = FastAPI(title="RAF — Research Article Fabricator", version="1.0.0")
+app = FastAPI(title="RAF — Research Article Fabricator", version=API_VERSION)
+
+
+@app.on_event("startup")
+def _recover() -> None:
+    writer.recover_interrupted_runs()
 app.add_middleware(CORSMiddleware, allow_origins=list(settings.cors_origins), allow_methods=["*"], allow_headers=["*"])
 
 DATASET_TYPES = {".csv", ".tsv", ".xlsx", ".xls"}
@@ -49,12 +57,34 @@ def _view(p: Project) -> dict:
 # ------------------------------------------------------------------ system
 @app.get("/api/health")
 def health():
-    return {"status": "ok", **llm.health(), "limits": {"min_references": settings.min_references, "max_references": settings.max_references}}
+    return {"status": "ok", "api_version": API_VERSION, **llm.health(),
+            "limits": {"min_references": settings.min_references, "max_references": settings.max_references}}
 
 
 @app.get("/api/segments")
 def segments():
-    return catalogue()
+    out = []
+    for item in catalogue():
+        bp = BLUEPRINTS[item["key"]]
+        lo, hi = writer.LENGTH_LIMITS.get(bp.key, writer.DEFAULT_LIMITS)
+        item["word_share"] = bp.word_share
+        item["lengthable"] = bp.word_share > 0 or bp.key == "abstract"
+        item["min_words"], item["max_words"] = lo, hi
+        out.append(item)
+    return out
+
+
+@app.put("/api/projects/{pid}/lengths")
+def set_lengths(pid: str, body: LengthsUpdate):
+    """Word targets per segment. Applies to segments that have not started yet (even during a run)."""
+    p = _get(pid)
+    locked = {k for k, s in p.segments.items() if s.status in {"working", "draft", "approved", "revising"} and jobs.running(pid)}
+
+    def apply(proj: Project):
+        for key, words in body.lengths.items():
+            if key in BLUEPRINTS and key not in locked:
+                proj.segment_lengths[key] = writer.clamp_length(key, words)
+    return _view(store.mutate(pid, apply))
 
 
 # ------------------------------------------------------------------ projects
@@ -228,8 +258,15 @@ def regenerate(pid: str, key: str):
 
 @app.put("/api/projects/{pid}/segments/{key}")
 def edit(pid: str, key: str, body: ManualEdit):
-    _segment_or_404(_get(pid), key)
+    p = _get(pid)
     _busy(pid)
+    if key not in p.segments:
+        if key not in {"title", "keywords", "abstract"}:
+            raise HTTPException(404, "Segment not found")
+        # Front matter can be written by hand even when RAF did not generate it.
+        def add(proj: Project):
+            proj.segments[key] = Segment(key=key, title=BLUEPRINTS[key].title, status="draft")
+        store.mutate(pid, add)
     return _view(writer.manual_edit(pid, key, body.content))
 
 

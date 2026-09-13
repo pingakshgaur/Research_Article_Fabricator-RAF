@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api.js";
 import { Button, Icon, Spinner, timeAgo, useToast } from "../ui.jsx";
+import { fmtDuration } from "./Processing.jsx";
 
 const TOOLS = [
   { key: "expand", label: "Expand", icon: "expand" },
@@ -12,6 +13,76 @@ const TOOLS = [
   { key: "humanize", label: "Humanize", icon: "human" },
   { key: "strengthen_argument", label: "Strengthen", icon: "target" },
 ];
+
+const META_KEYS = new Set(["title", "keywords", "abstract"]);
+const META_TITLES = { title: "Title", keywords: "Keywords", abstract: "Abstract" };
+
+/** Purpose-built manual editors for the article's front matter. */
+function MetaEditor({ segKey, seg, draft, setDraft, project }) {
+  const [kwInput, setKwInput] = useState("");
+  if (segKey === "title") {
+    const alternatives = (seg.notes || []).filter((n) => /^(Alternative|Working title):/.test(n)).map((n) => n.replace(/^[^:]+:\s*/, ""));
+    return (
+      <div className="paper">
+        <div className="field">
+          <label htmlFor="title-edit">Article title <span className="opt">use “Title: Subtitle” to add a subtitle</span></label>
+          <textarea id="title-edit" className="input title-input" rows={2} value={draft} onChange={(e) => setDraft(e.target.value.replace(/\n/g, " "))} autoFocus />
+          <span className="muted mono" style={{ fontSize: 11 }}>{draft.split(/\s+/).filter(Boolean).length} words · 10–20 recommended</span>
+        </div>
+        {alternatives.length > 0 && (
+          <div style={{ marginTop: 22 }}>
+            <div className="eyebrow" style={{ marginBottom: 10 }}>Suggestions</div>
+            <div className="stack" style={{ gap: 8 }}>
+              {alternatives.map((t) => (
+                <button key={t} type="button" className="tool" style={{ fontSize: 14 }} onClick={() => setDraft(t)}>
+                  <Icon name="arrow" size={14} /> {t}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+  if (segKey === "keywords") {
+    const list = draft.split(/;\s*/).map((k) => k.trim()).filter(Boolean);
+    const commit = (items) => setDraft([...new Set(items)].join("; "));
+    const add = () => {
+      const parts = kwInput.split(/[;,]/).map((k) => k.trim()).filter(Boolean);
+      if (parts.length) commit([...list, ...parts]);
+      setKwInput("");
+    };
+    return (
+      <div className="paper">
+        <div className="field">
+          <label>Keywords <span className="opt">{list.length} · 5–7 recommended · press Enter to add</span></label>
+          <div className="kw-editor">
+            {list.map((k) => (
+              <span key={k} className="kw-chip">{k}<button type="button" aria-label={`Remove ${k}`} onClick={() => commit(list.filter((x) => x !== k))}><Icon name="x" size={12} /></button></span>
+            ))}
+            <input className="kw-input" value={kwInput} autoFocus placeholder="Add a keyword…" onChange={(e) => setKwInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === ",") { e.preventDefault(); add(); }
+                if (e.key === "Backspace" && !kwInput && list.length) commit(list.slice(0, -1));
+              }} onBlur={add} />
+          </div>
+        </div>
+      </div>
+    );
+  }
+  const words = draft.split(/\s+/).filter(Boolean).length;
+  const target = project.segment_lengths?.abstract || seg.quality.target_words || 220;
+  return (
+    <div className="paper">
+      <div className="field">
+        <label htmlFor="abstract-edit">Abstract <span className="opt" style={{ color: words > target * 1.25 || words < target * 0.6 ? "var(--warn)" : undefined }}>{words} / ~{target} words</span></label>
+        <textarea id="abstract-edit" className="textarea serif" rows={14} value={draft} onChange={(e) => setDraft(e.target.value)} autoFocus spellCheck
+          style={{ fontSize: 16, lineHeight: 1.75 }} />
+        <span className="muted" style={{ fontSize: 12 }}>One paragraph: context → aim → method → key findings → conclusion → value. No citations.</span>
+      </div>
+    </div>
+  );
+}
 
 const ORDER = ["title", "abstract", "keywords", "introduction", "literature_review", "methodology", "results", "discussion", "conclusion", "limitations", "references", "appendices"];
 
@@ -159,6 +230,9 @@ export default function Studio({ project, setProject, navigate }) {
           <h1 className="h2" style={{ fontSize: 30, marginTop: 8, maxWidth: 900 }}>{project.segments.title?.content || project.title}</h1>
         </div>
         <div className="row">
+          {project.run?.elapsed_before > 0 && (
+            <span className="badge mono" title="Total fabrication time across all sessions">⏱ {fmtDuration(project.run.elapsed_before, true)}</span>
+          )}
           <span className="badge accent mono">{approved} / {keys.length} approved</span>
           <Button variant="primary" iconRight="arrow" disabled={!approved} onClick={() => navigate(project.id, "published")}>Publish</Button>
         </div>
@@ -175,6 +249,13 @@ export default function Studio({ project, setProject, navigate }) {
               </button>
             );
           })}
+          {[...META_KEYS].filter((k) => !project.segments[k]).map((k) => (
+            <button key={k} className="muted" disabled={busy} title="Write this segment yourself"
+              onClick={() => run(() => api.edit(project.id, k, k === "title" ? project.title : ""), `${META_TITLES[k]} added — edit it below`).then(() => setActive(k))}>
+              <span>+ Add {META_TITLES[k].toLowerCase()}</span>
+              <Icon name="plus" size={13} />
+            </button>
+          ))}
         </nav>
 
         <section>
@@ -208,7 +289,9 @@ export default function Studio({ project, setProject, navigate }) {
             </div>
           </div>
 
-          {editing ? (
+          {editing && META_KEYS.has(active) ? (
+            <MetaEditor segKey={active} seg={seg} draft={draft} setDraft={setDraft} project={project} />
+          ) : editing ? (
             <textarea className="editor" value={draft} onChange={(e) => setDraft(e.target.value)} spellCheck
               aria-label={`Edit ${seg.title}`} />
           ) : (
@@ -216,7 +299,12 @@ export default function Studio({ project, setProject, navigate }) {
               {segBusy && (
                 <div className="busy-veil"><div className="card"><Spinner size={18} /><span>{project.busy || "RAF is working on this segment…"}</span></div></div>
               )}
-              <div className="mono muted" style={{ fontSize: 11, letterSpacing: ".14em", textTransform: "uppercase" }}>§ {seg.title}</div>
+              <div className="row between">
+                <div className="mono muted" style={{ fontSize: 11, letterSpacing: ".14em", textTransform: "uppercase" }}>§ {seg.title}</div>
+                {META_KEYS.has(active) && !segBusy && (
+                  <Button size="sm" variant="soft" icon="edit" onClick={() => { setDraft(seg.content); setEditing(true); }}>Edit {seg.title.toLowerCase()}</Button>
+                )}
+              </div>
               <h2 className="seg-heading">{seg.title}</h2>
               <div className="prose">
                 {seg.content ? <SegmentBody seg={seg} project={project} sources={sources} /> : <p className="muted">Not written yet.</p>}

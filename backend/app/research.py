@@ -105,20 +105,21 @@ def crossref(query: str) -> list[WebSource]:
 
 def semantic_scholar(query: str) -> list[WebSource]:
     fields = "title,abstract,year,venue,authors,externalIds,url"
-    try:
+    # REST first with a single short retry: the client library retries 429s for minutes, which stalled whole runs.
+    with _client() as c:
+        r = c.get("https://api.semanticscholar.org/graph/v1/paper/search", params={"query": query, "limit": N, "fields": fields})
+        if r.status_code == 429:
+            time.sleep(3)
+            r = c.get("https://api.semanticscholar.org/graph/v1/paper/search", params={"query": query, "limit": N, "fields": fields})
+    if r.status_code == 429:
+        r.raise_for_status()  # lets the circuit breaker in research() skip this source for the rest of the run
+    if r.status_code == 200:
+        papers = r.json().get("data", [])
+    else:
         from semanticscholar import SemanticScholar
 
-        results = SemanticScholar(timeout=settings.http_timeout).search_paper(query, limit=N, fields=fields.split(","))
+        results = SemanticScholar(timeout=settings.http_timeout, retry=False).search_paper(query, limit=N, fields=fields.split(","))
         papers = [p.raw_data for p in list(results)[:N]]
-    except Exception:  # noqa: BLE001
-        with _client() as c:
-            for attempt in range(3):  # the shared unauthenticated pool often answers 429
-                r = c.get("https://api.semanticscholar.org/graph/v1/paper/search", params={"query": query, "limit": N, "fields": fields})
-                if r.status_code != 429:
-                    break
-                time.sleep(2 + 3 * attempt)
-            r.raise_for_status()
-            papers = r.json().get("data", [])
     return [
         WebSource(
             source="semanticscholar",
@@ -342,7 +343,17 @@ THROTTLE = {"arxiv": 3.2, "semanticscholar": 1.5, "pubmed": 0.4, "wikipedia": 0.
 _throttle_state: dict[str, tuple[threading.Lock, list[float]]] = {s: (threading.Lock(), [0.0]) for s in THROTTLE}
 
 
+RATE_LIMIT_COOLDOWN = 600  # seconds a source is skipped after it answers "429 Too Many Requests"
+_blocked_until: dict[str, float] = {}
+
+
+class SourceSkipped(RuntimeError):
+    pass
+
+
 def _throttled(source: str, query: str) -> list[WebSource]:
+    if time.monotonic() < _blocked_until.get(source, 0):
+        raise SourceSkipped("rate-limited earlier in this run")
     if source in _throttle_state:
         lock, last = _throttle_state[source]
         with lock:
@@ -350,7 +361,13 @@ def _throttled(source: str, query: str) -> list[WebSource]:
             if wait > 0:
                 time.sleep(wait)
             last[0] = time.monotonic()
-    return SOURCES[source](query)
+    try:
+        return SOURCES[source](query)
+    except Exception as exc:
+        if "429" in str(exc) or getattr(getattr(exc, "response", None), "status_code", None) == 429:
+            _blocked_until[source] = time.monotonic() + RATE_LIMIT_COOLDOWN
+            raise SourceSkipped("rate limit reached (HTTP 429); skipping this source for 10 minutes") from exc
+        raise
 
 
 def research(queries: list[str], discipline: str, progress: Callable[[str], None] | None = None) -> list[WebSource]:
@@ -369,8 +386,9 @@ def research(queries: list[str], discipline: str, progress: Callable[[str], None
                     progress(f"{s}: {len(res)} result(s) for “{q[:60]}”")
             except Exception as exc:  # noqa: BLE001
                 log.info("source %s failed for %r: %s", s, q, exc)
-                if progress:
-                    progress(f"{s}: unavailable ({type(exc).__name__}), continuing with other sources")
+                if progress and not (isinstance(exc, SourceSkipped) and str(exc).startswith("rate-limited earlier")):
+                    reason = str(exc) if isinstance(exc, SourceSkipped) else type(exc).__name__
+                    progress(f"{s}: unavailable ({reason}), continuing with other sources")
     seen, unique = set(), []
     for w in found:
         key = (w.doi or re.sub(r"\W+", "", w.title.lower()))[:120]

@@ -11,6 +11,7 @@ the draft is verified against the evidence so no statistic is fabricated.
 from __future__ import annotations
 
 import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from . import llm
@@ -111,18 +112,25 @@ def enforce(text: str, fp: SourceFingerprint, progress=None, rounds: int = 2) ->
             break
         if progress:
             progress(f"Originality guard: {len(result.flagged)} sentence(s) too close to sources (overlap {result.overlap:.1%}); re-expressing")
-        for sent in result.flagged[:25]:
-            original = _find_with_markers(text, sent)
-            if not original:
-                continue
-            new = llm.generate(
-                "You are an expert academic editor. Re-express a sentence so it is fully original while keeping its exact meaning.",
-                "Rewrite the sentence below with a different grammatical structure and fresh vocabulary. Keep every factual detail, "
-                "number and any citation markers like [R2] exactly. Return only the rewritten sentence.\n\n"
-                f"SENTENCE: {original}",
-                temperature=0.85, max_tokens=250,
-            ).strip().strip('"')
-            if new and len(new) > 20 and "\n" not in new:
+        originals = [o for o in dict.fromkeys(_find_with_markers(text, s) for s in result.flagged[:25]) if o]
+
+        def rewrite(original: str) -> str:
+            try:
+                return llm.generate(
+                    "You are an expert academic editor. Re-express a sentence so it is fully original while keeping its exact meaning.",
+                    "Rewrite the sentence below with a different grammatical structure and fresh vocabulary. Keep every factual detail, "
+                    "number and any citation markers like [R2] exactly. Return only the rewritten sentence.\n\n"
+                    f"SENTENCE: {original}",
+                    temperature=0.85, max_tokens=250,
+                ).strip().strip('"')
+            except llm.LLMError:
+                return ""  # fallback: keep the sentence; it stays flagged in the integrity report
+
+        # Rewrites are independent, so every available agent works on them at once.
+        with ThreadPoolExecutor(max_workers=max(1, llm.runtime.capacity)) as pool:
+            replacements = list(pool.map(rewrite, originals))
+        for original, new in zip(originals, replacements):
+            if new and len(new) > 20 and "\n" not in new and original in text:
                 text = text.replace(original, new, 1)
                 rewritten += 1
         result = check(text, fp)

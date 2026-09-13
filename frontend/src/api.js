@@ -37,6 +37,7 @@ export const api = {
   removeRef: (id, rid) => request(`/projects/${id}/references/${rid}`, { method: "DELETE" }),
   uploadData: (id, list) => request(`/projects/${id}/datasets`, { method: "POST", form: files(list) }),
   removeData: (id, name) => request(`/projects/${id}/datasets/${encodeURIComponent(name)}`, { method: "DELETE" }),
+  setLengths: (id, lengths) => request(`/projects/${id}/lengths`, { method: "PUT", body: { lengths } }),
   generate: (id, data) => request(`/projects/${id}/generate`, { method: "POST", body: data }),
   revise: (id, key, instruction, selection = "") => request(`/projects/${id}/segments/${key}/revise`, { method: "POST", body: { instruction, selection } }),
   tool: (id, key, tool, selection = "") => request(`/projects/${id}/segments/${key}/tool`, { method: "POST", body: { tool, selection } }),
