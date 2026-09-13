@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "raf-api",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": ["-NoProfile", "-Command", "$env:RAF_DATA_DIR='D:\\Pingaksh\\Research_Article_Fabricator-RAF\\.scratch\\data'; Set-Location D:\\Pingaksh\\Research_Article_Fabricator-RAF\\backend; ..\\.venv\\Scripts\\python.exe -m uvicorn app.main:app --port 8000"],
+      "port": 8000
+    },
+    {
+      "name": "raf-ui",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": ["-NoProfile", "-Command", "Set-Location D:\\Pingaksh\\Research_Article_Fabricator-RAF\\frontend; npm.cmd run dev"],
+      "port": 5173
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+services:
+  backend:
+    build: ./backend
+    environment:
+      RAF_OLLAMA_URL: ${RAF_OLLAMA_URL:-http://host.docker.internal:11434}
+      RAF_MODEL: ${RAF_MODEL:-gemma4:12b}
+      RAF_NUM_CTX: ${RAF_NUM_CTX:-16384}
+      RAF_NUM_GPU: ${RAF_NUM_GPU:--1}
+      RAF_CORS: http://localhost:8080
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./backend/data:/data
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    depends_on: [backend]
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+
+  # Optional: run Ollama inside Docker instead of on the host.
+  #   docker compose --profile ollama up -d
+  #   docker compose exec ollama ollama pull gemma4:12b
+  # and set RAF_OLLAMA_URL=http://ollama:11434
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["ollama"]
+    volumes:
+      - ./ollama-models:/root/.ollama
+    ports:
+      - "11434:11434"
+    restart: unless-stopped

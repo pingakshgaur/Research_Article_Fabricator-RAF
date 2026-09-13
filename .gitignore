@@ -1,0 +1,23 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# Runtime data (uploaded papers, indexes, exports)
+backend/data/
+backend/static/
+ollama-models/
+
+# Local scratch / tests on D:
+.scratch/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+.env
