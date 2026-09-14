@@ -16,7 +16,7 @@
     {
       "name": "raf-api-test",
       "runtimeExecutable": "powershell",
-      "runtimeArgs": ["-NoProfile", "-Command", "$env:RAF_DATA_DIR='D:\\Pingaksh\\Research_Article_Fabricator-RAF\\.scratch\\data_crowd'; Set-Location D:\\Pingaksh\\Research_Article_Fabricator-RAF\\backend; ..\\.venv\\Scripts\\python.exe -m uvicorn app.main:app --port 8011"],
+      "runtimeArgs": ["-NoProfile", "-Command", "$env:RAF_DATA_DIR='D:\\Pingaksh\\Research_Article_Fabricator-RAF\\.scratch\\data_v3'; Set-Location D:\\Pingaksh\\Research_Article_Fabricator-RAF\\backend; ..\\.venv\\Scripts\\python.exe -m uvicorn app.main:app --port 8011"],
       "port": 8011
     },
     {

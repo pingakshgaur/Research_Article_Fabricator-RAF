@@ -10,6 +10,7 @@ from typing import Callable
 
 import httpx
 
+from . import llm_settings
 from .config import settings
 
 log = logging.getLogger("raf.llm")
@@ -28,19 +29,20 @@ def _clean(text: str) -> str:
 
 
 def health() -> dict:
+    model = llm_settings.get()["model"]
     try:
         r = httpx.get(f"{settings.ollama_url}/api/tags", timeout=5)
         r.raise_for_status()
         names = [m["name"] for m in r.json().get("models", [])]
         return {
             "ollama": True,
-            "model": settings.model,
-            "model_available": any(n == settings.model or n.startswith(settings.model + ":") for n in names),
+            "model": model,
+            "model_available": any(n == model or n.startswith(model + ":") for n in names),
             "embed_model_available": any(n.split(":")[0] == settings.embed_model.split(":")[0] for n in names),
             "models": names,
         }
     except Exception as exc:  # noqa: BLE001
-        return {"ollama": False, "model": settings.model, "model_available": False, "embed_model_available": False, "error": str(exc)}
+        return {"ollama": False, "model": model, "model_available": False, "embed_model_available": False, "error": str(exc)}
 
 
 # ---------------------------------------------------------------------------- agents & fallbacks
@@ -57,7 +59,7 @@ class _Runtime:
         self.cond = threading.Condition()
         self.capacity = 1
         self.free_slots = [1]
-        self.num_gpu = settings.num_gpu
+        self.gpu_override: int | None = None   # set by the out-of-memory fallback; otherwise Developer Tools decide
         self.notify: Callable[[str], None] = lambda message: None
         self.local = threading.local()
 
@@ -93,14 +95,17 @@ class _Runtime:
         self.notify(f"⚠ Memory pressure: reducing to {self.capacity} parallel agent(s)")
         return True
 
+    def effective_gpu(self, s: dict) -> int:
+        return s["num_gpu"] if self.gpu_override is None else self.gpu_override
+
     def lower_gpu(self) -> bool:
-        ladder = list(self.GPU_LADDER)
-        current = self.num_gpu if self.num_gpu in ladder else -1
-        idx = ladder.index(current)
-        if idx >= len(ladder) - 1:
+        current = self.effective_gpu(llm_settings.get())
+        lower = [g for g in self.GPU_LADDER if g >= 0 and (current < 0 or g < current)]
+        if not lower:
             return False
-        self.num_gpu = ladder[idx + 1]
-        self.notify(f"⚠ Model ran out of memory: retrying with {'CPU only' if self.num_gpu == 0 else f'{self.num_gpu} GPU layers'} (RAF_NUM_GPU={self.num_gpu})")
+        self.gpu_override = lower[0]
+        self.notify(f"⚠ Model ran out of memory: retrying with {'CPU only' if self.gpu_override == 0 else f'{self.gpu_override} GPU layers'}"
+                    " (change GPU layers in Developer Tools to make this permanent)")
         return True
 
 
@@ -142,28 +147,23 @@ def chat(
 ) -> str:
     last: Exception | None = None
     for attempt in range(retries + 1):
+        s = llm_settings.get()   # Developer Tools settings, re-read on every call
         payload = {
-            "model": settings.model,
+            "model": s["model"],
             "messages": messages,
             "stream": False,
-            "think": False,
-            "keep_alive": "30m",
-            "options": {
-                "temperature": temperature,
-                "top_p": top_p,
-                "top_k": 64,
-                "num_ctx": settings.num_ctx,
-                "num_predict": max_tokens,
-                "repeat_penalty": 1.08,
-            },
+            "think": bool(s["think"]) and not json_mode,
+            "keep_alive": s["keep_alive"],
+            "options": llm_settings.build_options(
+                s, temperature=llm_settings.scaled_temperature(temperature), max_tokens=max_tokens,
+                num_gpu=runtime.effective_gpu(s),
+            ),
         }
-        if runtime.num_gpu >= 0:
-            payload["options"]["num_gpu"] = runtime.num_gpu
         if json_mode:
             payload["format"] = "json"
         slot = runtime.acquire()
         try:
-            with httpx.Client(timeout=settings.llm_timeout) as client:
+            with httpx.Client(timeout=s["request_timeout"]) as client:
                 r = client.post(f"{settings.ollama_url}/api/chat", json=payload)
                 if r.status_code == 400 and "think" in r.text:
                     payload.pop("think", None)  # older Ollama builds reject the flag
@@ -189,7 +189,7 @@ def chat(
                 break
         except httpx.TimeoutException as exc:
             last = exc
-            runtime.notify(f"⚠ Model call timed out after {settings.llm_timeout}s; retrying")
+            runtime.notify(f"⚠ Model call timed out after {s['request_timeout']}s; retrying")
         finally:
             if slot:
                 runtime.release(slot)

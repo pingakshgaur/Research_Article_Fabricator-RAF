@@ -37,6 +37,24 @@ export const api = {
   removeRef: (id, rid) => request(`/projects/${id}/references/${rid}`, { method: "DELETE" }),
   uploadData: (id, list) => request(`/projects/${id}/datasets`, { method: "POST", form: files(list) }),
   removeData: (id, name) => request(`/projects/${id}/datasets/${encodeURIComponent(name)}`, { method: "DELETE" }),
+  tones: () => request("/tones"),
+  setTone: (id, tone) => request(`/projects/${id}/tone`, { method: "PUT", body: tone }),
+  lengthProfile: (type, words) => request(`/length-profile?article_type=${encodeURIComponent(type)}&target_words=${words}`),
+  publishStyles: () => request("/publish/styles"),
+  setPublishStyle: (id, style) => request(`/projects/${id}/publish-style`, { method: "PUT", body: style }),
+  review: (id) => request(`/projects/${id}/review`, { method: "POST" }),
+  llmSettings: () => request("/settings/llm"),
+  saveLlmSettings: (patch) => request("/settings/llm", { method: "PUT", body: patch }),
+  resetLlmSettings: () => request("/settings/llm", { method: "DELETE" }),
+  benchmark: () => request("/settings/llm/benchmark", { method: "POST" }),
+  async previewPdf(id, style) {
+    const tab = window.open("", "_blank");
+    const res = await request(`/projects/${id}/export/pdf?draft=true&template=${style.template}&palette=${style.palette}`);
+    const url = URL.createObjectURL(await res.blob());
+    if (tab) tab.location.href = url;
+    else window.location.assign(url);
+    setTimeout(() => URL.revokeObjectURL(url), 120000);
+  },
   setLengths: (id, lengths) => request(`/projects/${id}/lengths`, { method: "PUT", body: { lengths } }),
   generate: (id, data) => request(`/projects/${id}/generate`, { method: "POST", body: data }),
   revise: (id, key, instruction, selection = "") => request(`/projects/${id}/segments/${key}/revise`, { method: "POST", body: { instruction, selection } }),
@@ -47,8 +65,9 @@ export const api = {
   restore: (id, key, index) => request(`/projects/${id}/segments/${key}/restore/${index}`, { method: "POST" }),
   importDoc: (id, file) => request(`/projects/${id}/import`, { method: "POST", form: files([file], "file") }),
   fileUrl: (id, path) => `${BASE}/projects/${id}/files/${path}`,
-  async download(id, fmt, draft = false) {
-    const res = await request(`/projects/${id}/export/${fmt}${draft ? "?draft=true" : ""}`);
+  async download(id, fmt, draft = false, style = null) {
+    const params = new URLSearchParams({ ...(draft ? { draft: "true" } : {}), ...(style || {}) });
+    const res = await request(`/projects/${id}/export/${fmt}${params.toString() ? `?${params}` : ""}`);
     const blob = await res.blob();
     const cd = res.headers.get("content-disposition") || "";
     const name = (cd.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/) || [])[1] || `article.${fmt}`;

@@ -34,6 +34,22 @@ All text generation runs on your own machine through **Ollama + `gemma4:12b`**. 
 * **Front matter editing.** The Studio has dedicated editors for the Title (with suggestions), Keywords (chips) and Abstract (live word count). You can also add any of these by hand if they weren't generated.
 * **Outdated-server warning.** The UI shows a banner when the API process is running older code than the interface. Restart the API after you update RAF.
 
+## Quality, tone & publishing features (v1.3)
+
+* **Hallucination filter** (`backend/app/factcheck.py`). Runs on every drafted segment in four layers:
+  1. Cleans up model artefacts: commentary, placeholders, citations to sources that don't exist, repeated and unfinished sentences.
+  2. A coherence review repairs paragraphs that are off-topic or don't make sense.
+  3. Every claim is checked against the passages of the source it cites; unclear cases go to a judge model.
+  4. Unsupported claims are corrected from the evidence or removed.
+  Anything still unverified is highlighted in the Studio. A whole-article review then checks that research questions are answered and numbers match across sections.
+* **Style engine** (`backend/app/style.py`). Measures sentence variation, repeated openers, stock connectors and formulaic phrases, and gives a naturalness score. It also profiles how your reference articles are written, so drafts follow your field's conventions. **Humanize** rewrites one paragraph at a time and keeps a rewrite only if every citation, number, name, key term and claim is preserved and the style metrics improve. Otherwise the paragraph stays unchanged.
+* **Tone meter**. Five tones (Formal academic, Critical-analytical, Argumentative, Explanatory, Reflective/narrative), each with an intensity slider.
+* **Length plan**. Short / Medium / Long, pages or words for each segment. Suggestions follow the usual proportions of the selected article type.
+* **Publishing templates**. Modern Report, Classic Journal, APA 7 Manuscript, Two-Column Conference and Minimal Monograph, in 7 colour styles, for both PDF and DOCX, with a PDF preview.
+* **Developer Tools** (sliders button in the top bar). Choose the model and set temperature, top-p/top-k/min-p, repeat, presence and frequency penalties, seed, context window, output limit, batch size, GPU layers, CPU threads, keep-alive, thinking mode and timeout. Includes presets and a real speed test. Settings are stored in `<data_dir>/llm_settings.json` and apply from the next model call.
+
+A note on AI detectors: these features aim to make articles accurate, well-sourced and well-written. They are not built to beat AI-detection tools, which are unreliable in both directions. Review the text yourself and follow your venue's rules on disclosing AI assistance.
+
 ## How RAF writes
 
 ```

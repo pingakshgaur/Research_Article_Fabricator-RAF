@@ -78,6 +78,10 @@ class QualityReport(BaseModel):
     citations: int = 0
     unverified_numbers: list[str] = []
     checklist: dict[str, bool] = {}
+    grounding: dict = {}          # hallucination filter summary
+    flags: list[dict] = []        # sentences still needing attention: {sentence, verdict, reason}
+    style: dict = {}              # naturalness metrics and score
+    humanize: dict = {}           # last Humanize run report
 
 
 class Segment(BaseModel):
@@ -121,6 +125,9 @@ class Project(BaseModel):
     analysis: AnalysisResult | None = None
     options: dict = Field(default_factory=lambda: {"web_research": True, "data_analysis": True})
     segment_lengths: dict[str, int] = {}          # user-chosen word targets per segment
+    tone: dict = Field(default_factory=lambda: {"name": "academic", "intensity": 50})
+    publish_style: dict = Field(default_factory=lambda: {"template": "modern_report", "palette": "violet"})
+    review: dict = {}                             # article-level consistency review
     run: "RunInfo" = Field(default_factory=lambda: RunInfo())
     stage: Literal["setup", "references", "segments", "processing", "studio", "published"] = "setup"
     log: list[dict] = []
@@ -161,10 +168,23 @@ class GenerateRequest(BaseModel):
     agents: int = Field(default=1, ge=1, le=3)    # 1 solo · 2 duo · 3 trio
     lengths: dict[str, int] = {}
     resume: bool = False                          # continue from checkpoints instead of rewriting drafts
+    tone: dict | None = None
+    hallucination_filter: bool = True
+    style_pass: bool = True
 
 
 class LengthsUpdate(BaseModel):
     lengths: dict[str, int]
+
+
+class ToneUpdate(BaseModel):
+    name: Literal["academic", "analytical", "persuasive", "explanatory", "reflective"]
+    intensity: int = Field(ge=0, le=100)
+
+
+class PublishStyle(BaseModel):
+    template: str = "modern_report"
+    palette: str = "violet"
 
 
 class ReviseRequest(BaseModel):

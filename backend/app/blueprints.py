@@ -44,12 +44,86 @@ COMMON_RULES = (
     "Synthesize: connect ideas across several sources in the same paragraph instead of summarising one source at a time.",
     "Every factual claim drawn from the evidence carries an inline citation marker such as [R3] or [W7], exactly as labelled in the evidence.",
     "Never invent statistics, sample sizes, dates, names or findings. Use only numbers that appear in the evidence or the analysis findings.",
-    "Use a confident, measured scholarly voice: precise verbs, hedging where the evidence is uncertain (suggests, indicates, appears).",
-    "Vary sentence length and structure naturally; mix short declarative sentences with longer analytical ones.",
-    "Avoid clichés and filler such as 'delve', 'in today's fast-paced world', 'it is important to note', 'a testament to', 'plays a crucial role', 'in conclusion'.",
-    "Do not use bullet points unless the blueprint asks for them. Write connected paragraphs with clear topic sentences and transitions.",
-    "Do not write the section heading; RAF adds headings when it assembles the article.",
+    "Be specific: name the actual context, population, policy, event, method or author instead of vague categories ('various factors', 'many studies', 'a wide range of').",
+    "Every sentence must add information or reasoning. Cut throat-clearing openers, restatements of the previous sentence and empty summary sentences.",
+    "Take positions the evidence supports: say which explanation is stronger and why. Hedge only where the evidence is genuinely uncertain, and say what makes it uncertain.",
+    "Let sentence length follow the thought: a short sentence for a key point, a longer one for a qualified argument. Do not start consecutive sentences the same way.",
+    "Link ideas through logic, not stock connectors: avoid opening sentences with 'Moreover', 'Furthermore', 'Additionally', 'Overall' or 'In conclusion'.",
+    "Avoid formulaic wording: 'delve', 'crucial', 'pivotal', 'landscape', 'multifaceted', 'plays a key role', 'shed light on', 'pave the way', 'it is important to note', 'a testament to', 'in today's world'.",
+    "Do not reflexively group things in threes, do not end paragraphs with a generic moral, and never use rhetorical questions as filler.",
+    "Do not use bullet points unless the blueprint asks for them. Write connected paragraphs with clear topic sentences.",
+    "Do not write the section heading and do not add commentary about the text (no 'Here is', no notes to the reader).",
 )
+
+# ----------------------------------------------------------------------------------------------------- tone meter
+TONES: dict[str, dict] = {
+    "academic": {
+        "label": "Formal academic", "summary": "Objective, impersonal and precise — the default register of journal articles.",
+        "levels": ("Keep an objective scholarly register with occasional first-person plural where natural.",
+                   "Write in a formal, impersonal academic register: precise terminology, measured claims, no colloquialisms.",
+                   "Write in a strictly formal register: impersonal constructions, discipline-specific terminology, carefully qualified claims, no first person."),
+    },
+    "analytical": {
+        "label": "Critical-analytical", "summary": "Weighs evidence, exposes weaknesses and compares explanations.",
+        "levels": ("Where useful, point out the strength or weakness of the evidence behind claims.",
+                   "Evaluate rather than describe: compare explanations, assess the quality of evidence and name methodological weaknesses.",
+                   "Be rigorously critical: interrogate every body of evidence, contrast competing explanations explicitly and state which is better supported and why."),
+    },
+    "persuasive": {
+        "label": "Argumentative", "summary": "Advances a clear thesis and defends it against counter-arguments.",
+        "levels": ("Make the article's central argument visible in each section.",
+                   "Advance a clear thesis: each paragraph should build the case, and address the main counter-argument with evidence.",
+                   "Argue decisively: state the thesis early and forcefully, marshal evidence toward it and rebut counter-arguments directly — without overstating the evidence."),
+    },
+    "explanatory": {
+        "label": "Explanatory", "summary": "Clear and accessible — defines terms and guides the reader step by step.",
+        "levels": ("Define specialised terms briefly on first use.",
+                   "Prioritise clarity: define key terms, explain mechanisms step by step and prefer plain wording over jargon.",
+                   "Write for an informed non-specialist: define every technical term, use concrete examples and short explanatory sentences."),
+    },
+    "reflective": {
+        "label": "Reflective / narrative", "summary": "Contextual and situated — suits case studies and qualitative work.",
+        "levels": ("Ground general points in the specific context being studied.",
+                   "Use a situated, narrative-analytical voice: describe context and events concretely and reflect on what they reveal; first-person plural is acceptable.",
+                   "Write as a reflective case narrative: follow how events unfolded in context, foreground actors and decisions, and draw lessons explicitly."),
+    },
+}
+
+
+def tone_instruction(tone: dict | None) -> str:
+    tone = tone or {}
+    spec = TONES.get(tone.get("name", "academic"), TONES["academic"])
+    intensity = max(0, min(100, int(tone.get("intensity", 50))))
+    level = 0 if intensity <= 33 else 1 if intensity <= 66 else 2
+    return f"TONE — {spec['label']} ({['subtle', 'balanced', 'strong'][level]}): {spec['levels'][level]}"
+
+
+# -------------------------------------------------------------------------------------------- length profiles
+WORDS_PER_PAGE = 500          # single-spaced A4, 11 pt
+SIZE_FACTORS = {"short": 0.65, "medium": 1.0, "long": 1.45}
+
+# Share of the article body per segment, and typical total pages, by article type.
+ARTICLE_PROFILES: dict[str, dict] = {
+    "Empirical research article": {"pages": 12, "shares": {"introduction": .12, "literature_review": .20, "methodology": .14, "results": .19, "discussion": .17, "conclusion": .07, "limitations": .05}},
+    "Systematic literature review": {"pages": 14, "shares": {"introduction": .10, "literature_review": .36, "methodology": .15, "results": .16, "discussion": .12, "conclusion": .06, "limitations": .05}},
+    "Conceptual / theoretical paper": {"pages": 10, "shares": {"introduction": .14, "literature_review": .34, "methodology": .06, "results": .10, "discussion": .22, "conclusion": .09, "limitations": .05}},
+    "Case study": {"pages": 11, "shares": {"introduction": .12, "literature_review": .16, "methodology": .12, "results": .24, "discussion": .20, "conclusion": .10, "limitations": .06}},
+    "Mixed-methods study": {"pages": 14, "shares": {"introduction": .11, "literature_review": .18, "methodology": .17, "results": .20, "discussion": .16, "conclusion": .07, "limitations": .05}},
+}
+ABSTRACT_WORDS = {"short": 150, "medium": 220, "long": 300}
+
+
+def length_profile(article_type: str, target_words: int) -> dict:
+    profile = ARTICLE_PROFILES.get(article_type, ARTICLE_PROFILES["Empirical research article"])
+    shares = profile["shares"]
+    total_share = sum(shares.values())
+    segments = {"abstract": {**{k: v for k, v in ABSTRACT_WORDS.items()}, "suggested": ABSTRACT_WORDS["medium"]}}
+    for key, share in shares.items():
+        base = round(target_words * share / total_share / 10) * 10
+        segments[key] = {"suggested": base, **{size: max(100, round(base * f / 10) * 10) for size, f in SIZE_FACTORS.items()}}
+    return {"article_type": article_type if article_type in ARTICLE_PROFILES else "Empirical research article",
+            "words_per_page": WORDS_PER_PAGE, "typical_pages": profile["pages"],
+            "typical_words": profile["pages"] * WORDS_PER_PAGE, "segments": segments}
 
 BLUEPRINTS: dict[str, Blueprint] = {
     "title": Blueprint(

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api.js";
 import { Icon } from "./ui.jsx";
+import DevTools from "./DevTools.jsx";
 import Home from "./pages/Home.jsx";
 import Setup from "./pages/Setup.jsx";
 import References from "./pages/References.jsx";
@@ -10,7 +11,7 @@ import Studio from "./pages/Studio.jsx";
 import Publish from "./pages/Publish.jsx";
 
 // Must match API_VERSION in backend/app/main.py.
-const EXPECTED_API = "1.2.0";
+const EXPECTED_API = "1.3.0";
 
 const STEPS = [
   { key: "setup", label: "Topic & title", hint: "What are we writing?" },
@@ -44,6 +45,7 @@ export default function App() {
   const [events, setEvents] = useState([]);
   const [theme, setTheme] = useState(document.documentElement.dataset.theme || "dark");
   const mainRef = useRef(null);
+  const [devOpen, setDevOpen] = useState(false);
 
   useEffect(() => {
     const onHash = () => setRoute(readHash());
@@ -116,11 +118,17 @@ export default function App() {
           <span className={`dot ${health?.ollama && health?.model_available ? "ok" : health ? "bad" : ""}`} />
           {!health ? "Checking engine…" : health.ollama ? (health.model_available ? `${health.model} · local` : `${health.model} not pulled`) : "Ollama offline"}
         </span>
+        <button className={`btn icon dev-button ${devOpen ? "on" : ""}`} aria-label="Developer tools: language model settings" title="Developer tools"
+          onClick={() => setDevOpen(true)}>
+          <Icon name="sliders" size={16} />
+        </button>
         <button className="theme-switch" aria-label="Toggle colour theme"
           onClick={() => { const next = theme === "dark" ? "light" : "dark"; setTheme(next); applyTheme(next); }}>
           <span className="knob"><Icon name={theme === "dark" ? "moon" : "sun"} size={13} stroke={2} /></span>
         </button>
       </header>
+
+      <DevTools open={devOpen} onClose={() => { setDevOpen(false); api.health().then(setHealth).catch(() => {}); }} />
 
       <nav className="rail" aria-label="Workflow">
         <div className="rail-title">{project ? "Workflow" : "Start"}</div>

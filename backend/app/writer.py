@@ -28,8 +28,8 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import numpy as np
 
 from . import analysis as analysis_mod
-from . import citations, jobs, llm, originality, research, store
-from .blueprints import BLUEPRINTS, COMMON_RULES, Blueprint, Move, generation_order
+from . import citations, factcheck, jobs, llm, originality, research, store, style
+from .blueprints import BLUEPRINTS, COMMON_RULES, Blueprint, Move, generation_order, length_profile, tone_instruction
 from .checkpoints import Checkpoints, signature
 from .ingest import chunk_text, heuristic_metadata, llm_metadata, read_any, strip_back_matter
 from .models import AnalysisResult, Figure, GenerateRequest, Project, QualityReport, RunInfo, Segment, Table, Version
@@ -143,8 +143,9 @@ def segment_words(p: Project, key: str) -> int:
     bp = BLUEPRINTS[key]
     if key in p.segment_lengths:
         return int(p.segment_lengths[key])
-    if key == "abstract":
-        return 220
+    suggested = length_profile(p.article_type, p.target_words)["segments"].get(key)
+    if suggested:
+        return int(suggested["suggested"])
     return max(0, int(p.target_words * bp.word_share))
 
 
@@ -348,7 +349,10 @@ def generate_article(pid: str, req: GenerateRequest) -> None:
 
     def init(p: Project):
         p.selected = keys
-        p.options = {**p.options, "web_research": req.web_research, "data_analysis": req.data_analysis, "depth": req.depth, "agents": req.agents}
+        p.options = {**p.options, "web_research": req.web_research, "data_analysis": req.data_analysis, "depth": req.depth, "agents": req.agents,
+                     "hallucination_filter": req.hallucination_filter, "style_pass": req.style_pass}
+        if req.tone:
+            p.tone = {"name": req.tone.get("name", "academic"), "intensity": int(req.tone.get("intensity", 50))}
         for k, words in req.lengths.items():
             if k in BLUEPRINTS:
                 p.segment_lengths[k] = clamp_length(k, words)
@@ -374,6 +378,8 @@ def generate_article(pid: str, req: GenerateRequest) -> None:
         build_corpus(ws, req)
         ws.begin_stage("writing")
         run_segments(ws, keys, req.depth, req.agents)
+        if req.depth == "thorough":
+            review_and_fix(ws, keys)
     except Exception:
         _stop_run(ws, keys, "stopped")
         raise
@@ -499,8 +505,43 @@ def finalize(ws: Workspace, key: str, content: str, evidence: str, reason: str, 
     bp = BLUEPRINTS[key]
     p = ws.project
     rewritten, overlap, flagged = 0, 0.0, 0
+    grounding, flags, style_report = {}, [], {}
     if not skip_guard:
         content = originality.destyle(content)
+        words_target = segment_words(p, key)
+        cp_step = f"guarded:{reason}"
+        cacheable = reason.startswith("initial draft")   # revisions are never restored from a checkpoint
+        cached = ws.cp.get(key, words_target, cp_step) if cacheable else None
+        if cached is not None:
+            content, grounding, flags, style_report = cached["content"], cached["grounding"], cached["flags"], cached["style"]
+            ws.log(f"↺ {bp.title} · integrity-filtered version restored from checkpoint")
+        else:
+            deep = depth == "thorough"
+            # ---- hallucination filter
+            if p.options.get("hallucination_filter", True):
+                ws.stage(f"Hallucination filter: {bp.title}", "guard", key=key)
+                try:
+                    content, grounding, flags = factcheck.filter_segment(
+                        content, ws, key=key, title=p.title, section=bp.title, purpose=bp.description,
+                        evidence=evidence, rules=rules_text(bp, p), deep=deep, progress=ws.log)
+                    if grounding.get("checked"):
+                        ws.log(f"Hallucination filter · {bp.title}: {grounding['checked']} claims checked · {grounding['supported']} supported · "
+                               f"{grounding.get('corrected', 0)} corrected · {grounding.get('removed', 0)} removed · {len(flags)} flagged for review")
+                except Exception as exc:  # noqa: BLE001 - fallback: keep the draft, say that the filter did not finish
+                    log.exception("hallucination filter failed")
+                    ws.log(f"⚠ Hallucination filter could not finish for {bp.title} ({exc}); claims are unverified")
+            # ---- naturalness pass on weak paragraphs
+            if p.options.get("style_pass", True) and deep:
+                ws.stage(f"Style & naturalness pass: {bp.title}", "guard", key=key)
+                try:
+                    content, style_report = style.humanize_text(
+                        content, title=p.title, section=bp.title, tone_rule=tone_instruction(p.tone),
+                        profile=style.field_profile(ws.dir / "index"), deep=False, only_below=65, progress=ws.log)
+                except Exception as exc:  # noqa: BLE001
+                    ws.log(f"⚠ Style pass skipped for {bp.title} ({exc})")
+            if cacheable:
+                ws.cp.put(key, words_target, cp_step, {"content": content, "grounding": grounding, "flags": flags, "style": style_report},
+                          label=f"{bp.title} · integrity-filtered")
         ws.stage(f"Originality & integrity checks: {bp.title}", "guard", key=key)
         try:
             content, check, rewritten = originality.enforce(content, ws.fingerprint, progress=ws.log, rounds=2 if depth == "thorough" else 1)
@@ -513,6 +554,8 @@ def finalize(ws: Workspace, key: str, content: str, evidence: str, reason: str, 
         flagged_sentences=flagged, rewritten_sentences=rewritten, readability=originality.readability(content) if words > 80 else None,
         citations=len(citations.MARKER.findall(content)),
         unverified_numbers=[] if skip_guard else originality.unverified_numbers(content, evidence),
+        grounding=grounding, flags=[f for f in flags if f["sentence"] in content or f["sentence"][:80] in content][:30],
+        style={**style.metrics(content), **({"pass": {k: style_report[k] for k in ("attempted", "rewritten")}} if style_report else {})},
     )
     seg = p.segments.get(key) or Segment(key=key, title=bp.title)
     fields = {"content": content, "quality": q, "status": "draft", "error": "", "versions": [*seg.versions, Version(content=content, reason=reason)][-20:]}
@@ -561,8 +604,14 @@ def article_context(p: Project, keys: tuple[str, ...], words_each: int = 450) ->
     return "\n\n".join(parts)
 
 
-def rules_text(bp: Blueprint) -> str:
-    return "\n".join(f"- {r}" for r in (*COMMON_RULES, *bp.rules))
+def rules_text(bp: Blueprint, p: Project | None = None) -> str:
+    extra = []
+    if p is not None:
+        extra.append(tone_instruction(p.tone))
+        rule = style.profile_rule(style.field_profile(store.project_dir(p.id) / "index"))
+        if rule:
+            extra.append(rule)
+    return "\n".join(f"- {r}" for r in (*COMMON_RULES, *bp.rules, *extra))
 
 
 def findings_text(a: AnalysisResult | None) -> str:
@@ -594,7 +643,7 @@ def draft_move(ws: Workspace, bp: Blueprint, move: Move, material: str, words: i
         f"{extra_context}\n\n"
         f"MATERIAL (research notes / evidence with source labels):\n{material}\n\n"
         + (f"THE SECTION SO FAR (continue seamlessly from it; do not repeat it):\n…{' '.join(previous.split()[-160:])}\n\n" if previous else "")
-        + f"WRITING RULES:\n{rules_text(bp)}\n\n"
+        + f"WRITING RULES:\n{rules_text(bp, p)}\n\n"
         f"Write approximately {words} words ({max(1, round(words / 150))} paragraph(s)) for this move only. "
         "Cite with the exact labels from the material, e.g. [R1] or [R2, W4]. Output only the prose."
     )
@@ -627,7 +676,7 @@ def critique_and_refine(ws: Workspace, bp: Blueprint, text: str, evidence: str) 
             AUTHOR_SYSTEM,
             f"Revise the '{bp.title}' section below to fix the reviewer's issues.\n\nISSUES:\n{issues}\n\n"
             f"SECTION:\n{text}\n\nSUPPORTING EVIDENCE (use only if needed to fix unsupported claims):\n{evidence[:6000]}\n\n"
-            f"RULES:\n{rules_text(bp)}\n- Keep every citation marker that remains relevant, keep lines like [[TABLE 1]] or [[FIGURE 1]] unchanged.\n"
+            f"RULES:\n{rules_text(bp, p)}\n- Keep every citation marker that remains relevant, keep lines like [[TABLE 1]] or [[FIGURE 1]] unchanged.\n"
             f"- Keep roughly the same length (~{words} words).\nOutput only the revised section.",
             temperature=0.6, max_tokens=int(words * 2.2) + 400,
         )
@@ -727,7 +776,7 @@ def build_emergency(ws: Workspace, bp: Blueprint):
         AUTHOR_SYSTEM,
         f"ARTICLE TITLE: {p.title}\nTOPIC: {p.topic}\nSECTION: {bp.title}\nPURPOSE: {bp.description}\n\n"
         + (f"ARTICLE CONTEXT:\n{ctx}\n\n" if ctx else "") + (f"EVIDENCE:\n{ev}\n\n" if ev else "") + f"{findings_text(p.analysis)}\n\n"
-        f"RULES:\n{rules_text(bp)}\n\nWrite the complete section in about {words} words. Output only the prose.",
+        f"RULES:\n{rules_text(bp, p)}\n\nWrite the complete section in about {words} words. Output only the prose.",
         temperature=0.65, max_tokens=int(words * 2.2) + 300,
     )
     if bp.key == "abstract":
@@ -866,7 +915,7 @@ def build_results(ws: Workspace, bp: Blueprint, depth: str):
                 AUTHOR_SYSTEM,
                 f"Article: {p.title}\nSECTION: Results — {g}\n\nFINDINGS (use numbers exactly as written, never add others):\n"
                 + "\n".join(f"- {f.split('] ', 1)[-1]}" for f in g_findings)
-                + f"\n\nTABLES AND FIGURES AVAILABLE:\n{items or '(none)'}\n\nRULES:\n{rules_text(bp)}\n\n"
+                + f"\n\nTABLES AND FIGURES AVAILABLE:\n{items or '(none)'}\n\nRULES:\n{rules_text(bp, p)}\n\n"
                 f"Write about {max(150, total // max(1, len(groups)))} words reporting these findings objectively. Refer to each table and figure by number "
                 "('Table 2 summarises…', '(see Figure 1)'). Report test statistic, p-value and effect size together. No citations, no interpretation. Output only prose.",
                 temperature=0.55, max_tokens=int(total * 2) + 300,
@@ -941,7 +990,7 @@ def build_abstract(ws: Workspace, bp: Blueprint, depth: str):
         ctx = findings_text(p.analysis) or f"Topic: {p.topic}"
     text = llm.generate(
         AUTHOR_SYSTEM,
-        f"ARTICLE TITLE: {p.title}\n\n{ctx}\n\n{findings_text(p.analysis)}\n\nRULES:\n{rules_text(bp)}\n\n"
+        f"ARTICLE TITLE: {p.title}\n\n{ctx}\n\n{findings_text(p.analysis)}\n\nRULES:\n{rules_text(bp, p)}\n\n"
         f"Write the abstract now as one paragraph of about {words} words. No citations, no headings. Output only the abstract.",
         temperature=0.6, max_tokens=int(words * 2.2) + 200,
     )
@@ -1066,7 +1115,7 @@ def revise_segment(pid: str, key: str, instruction: str, selection: str = "", re
             f"AUTHOR'S REVISION REQUEST: {instruction}\n\n"
             + (f"PASSAGE TO REVISE (only this passage; it sits inside the longer section):\n{target}\n\n" if target is not seg.content else f"CURRENT SECTION:\n{target}\n\n")
             + (f"EVIDENCE AVAILABLE:\n{evidence}\n\n" if evidence else "") + (f"{findings}\n\n" if findings else "") + (f"{protocol}\n\n" if protocol else "")
-            + f"RULES:\n{rules_text(bp)}\n- Apply the revision request faithfully; change nothing else unnecessarily.\n"
+            + f"RULES:\n{rules_text(bp, p)}\n- Apply the revision request faithfully; change nothing else unnecessarily.\n"
             "- Keep citation markers like [R2] that remain relevant and keep lines like [[TABLE 1]] / [[FIGURE 1]] exactly.\n"
             f"- Current length is ~{words} words; change length only if the request implies it.\n"
             "Output only the revised text.",
@@ -1077,6 +1126,67 @@ def revise_segment(pid: str, key: str, instruction: str, selection: str = "", re
         if key == "results" and p.analysis:
             content = _restore_placeholders(content, AnalysisResult(tables=seg.tables, figures=seg.figures))
         finalize(ws, key, content, "\n".join([evidence, findings, protocol, seg.content]), reason=reason, depth="quick")
+    except Exception as exc:  # noqa: BLE001
+        ws.set_segment(key, status="draft", error=str(exc))
+        raise
+
+
+def review_and_fix(ws: Workspace, keys: list[str], apply_fixes: bool = True) -> dict:
+    """Article-level consistency review; the most important issues are fixed automatically in draft segments."""
+    p = ws.project
+    sig = signature({k: p.segments[k].content for k in keys if k in p.segments})
+    if ws.cp.corpus_done("review", sig) and p.review:
+        ws.log("↺ Article review restored from checkpoint")
+        return p.review
+    ws.begin_stage("guard")
+    ws.stage("Article review · checking consistency across all segments", "guard")
+    try:
+        report = factcheck.review_article(p, {k: s.content for k, s in p.segments.items() if k in keys and s.content})
+    except Exception as exc:  # noqa: BLE001
+        ws.log(f"⚠ Article review skipped ({exc})")
+        return {}
+    applied = 0
+    for issue in report["issues"]:
+        seg = ws.project.segments.get(issue["segment"])
+        issue["applied"] = False
+        if not apply_fixes or seg is None or seg.status != "draft" or applied >= 3:
+            continue
+        ws.log(f"Article review · fixing {seg.title}: {issue['issue'][:140]}")
+        try:
+            revise_segment(ws.pid, issue["segment"], issue["instruction"], reason=f"article review: {issue['type']}")
+            issue["applied"] = True
+            applied += 1
+        except Exception as exc:  # noqa: BLE001
+            ws.log(f"⚠ Could not apply review fix to {seg.title}: {exc}")
+    report["at"] = time.time()
+    store.mutate(ws.pid, lambda proj: setattr(proj, "review", report))
+    ws.cp.mark_corpus("review", signature({k: ws.project.segments[k].content for k in keys if k in ws.project.segments}), "article review")
+    ws.log(f"Article review: {len(report['issues'])} issue(s) found, {applied} fixed automatically")
+    return report
+
+
+def humanize_segment(pid: str, key: str, selection: str = "") -> None:
+    """Studio Humanize tool: paragraph-level rewriting with a fact inventory and verification gate."""
+    ws = Workspace(pid)
+    llm.runtime.notify = ws.log
+    bp = BLUEPRINTS[key]
+    p = ws.project
+    seg = p.segments[key]
+    ws.set_segment(key, status="revising")
+    ws.stage(f"Humanizing {bp.title}", "revising", key=key)
+    try:
+        target = selection.strip() if selection.strip() and selection.strip() in seg.content else seg.content
+        new, report = style.humanize_text(
+            target, title=p.title, section=bp.title, tone_rule=tone_instruction(p.tone),
+            profile=style.field_profile(ws.dir / "index"), deep=True, progress=ws.log)
+        content = seg.content.replace(target, new, 1) if target is not seg.content else new
+        ws.log(f"Humanize · {bp.title}: rewrote {report['rewritten']}/{report['attempted']} paragraph(s) · style score "
+               f"{report['score_before']} → {report['score_after']} · citations kept {report['citations_preserved']} · numbers kept {report['numbers_preserved']}")
+        q = seg.quality.model_copy()
+        q.style = style.metrics(content)
+        q.humanize = {**report, "at": time.time()}
+        ws.set_segment(key, content=content, quality=q, status="draft", error="",
+                       versions=[*seg.versions, Version(content=content, reason=f"humanize: {report['rewritten']}/{report['attempted']} paragraphs")][-20:])
     except Exception as exc:  # noqa: BLE001
         ws.set_segment(key, status="draft", error=str(exc))
         raise
@@ -1100,6 +1210,8 @@ def manual_edit(pid: str, key: str, content: str) -> Project:
     if BLUEPRINTS[key].special not in {"references", "title", "keywords", "appendices"} and ws.index.chunks:
         chk = originality.check(content, ws.fingerprint)
         q.ngram_overlap, q.flagged_sentences = round(chk.overlap, 4), len(chk.flagged)
+        q.style = style.metrics(content)
+    q.flags = [f for f in q.flags if f.get("sentence", "")[:80] in content]   # an edited-away sentence is no longer flagged
     return ws.set_segment(key, content=content, quality=q, status="draft", error="", versions=[*seg.versions, Version(content=content, reason="manual edit")][-20:])
 
 

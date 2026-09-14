@@ -14,10 +14,13 @@ from . import jobs, llm, publisher, store, writer
 from .blueprints import BLUEPRINTS, catalogue
 from .config import settings
 from .ingest import SUPPORTED
-from .models import GenerateRequest, LengthsUpdate, ManualEdit, Project, ProjectCreate, Reference, ReviseRequest, Segment, ToolRequest
+from . import llm_settings
+from .blueprints import TONES, length_profile
+from .models import (GenerateRequest, LengthsUpdate, ManualEdit, Project, ProjectCreate, PublishStyle, Reference, ReviseRequest, Segment,
+                     ToneUpdate, ToolRequest)
 
 # Bump whenever the backend changes in a way the UI depends on; the UI warns when the running server is older.
-API_VERSION = "1.2.0"
+API_VERSION = "1.3.0"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 app = FastAPI(title="RAF — Research Article Fabricator", version=API_VERSION)
@@ -242,9 +245,92 @@ def tool(pid: str, key: str, body: ToolRequest):
     p = _get(pid)
     _segment_or_404(p, key)
     _busy(pid)
-    instruction = writer.TOOL_INSTRUCTIONS[body.tool]
-    jobs.start(pid, f"{body.tool.replace('_', ' ').title()} · {BLUEPRINTS[key].title}", lambda: writer.revise_segment(pid, key, instruction, body.selection, reason=f"tool: {body.tool}"))
+    label = f"{body.tool.replace('_', ' ').title()} · {BLUEPRINTS[key].title}"
+    if body.tool == "humanize":
+        jobs.start(pid, label, lambda: writer.humanize_segment(pid, key, body.selection))
+    else:
+        instruction = writer.TOOL_INSTRUCTIONS[body.tool]
+        jobs.start(pid, label, lambda: writer.revise_segment(pid, key, instruction, body.selection, reason=f"tool: {body.tool}"))
     return _view(_get(pid))
+
+
+@app.post("/api/projects/{pid}/review")
+def run_review(pid: str):
+    """Re-run the article-level consistency review on demand (issues are reported, not auto-applied)."""
+    p = _get(pid)
+    _busy(pid)
+    keys = [k for k, s in p.segments.items() if s.content]
+
+    def job():
+        ws = writer.Workspace(pid)
+        llm.runtime.notify = ws.log
+        store.mutate(pid, lambda proj: setattr(proj, "review", {}))
+        writer.review_and_fix(ws, keys, apply_fixes=False)
+    jobs.start(pid, "Article review", job)
+    return _view(_get(pid))
+
+
+# ------------------------------------------------------------------ tone, lengths, publishing styles
+@app.get("/api/tones")
+def tones():
+    return [{"key": k, "label": v["label"], "summary": v["summary"], "levels": list(v["levels"])} for k, v in TONES.items()]
+
+
+@app.put("/api/projects/{pid}/tone")
+def set_tone(pid: str, body: ToneUpdate):
+    _get(pid)
+    return _view(store.mutate(pid, lambda proj: setattr(proj, "tone", body.model_dump())))
+
+
+@app.get("/api/length-profile")
+def get_length_profile(article_type: str = "Empirical research article", target_words: int = 6000):
+    return length_profile(article_type, max(1000, min(40000, target_words)))
+
+
+@app.get("/api/publish/styles")
+def publish_styles():
+    return publisher.styles_catalogue()
+
+
+@app.put("/api/projects/{pid}/publish-style")
+def set_publish_style(pid: str, body: PublishStyle):
+    _get(pid)
+    if body.template not in publisher.TEMPLATES or body.palette not in publisher.PALETTES:
+        raise HTTPException(422, "Unknown template or colour style.")
+    return _view(store.mutate(pid, lambda proj: setattr(proj, "publish_style", body.model_dump())))
+
+
+# ------------------------------------------------------------------ developer tools (model settings)
+@app.get("/api/settings/llm")
+def get_llm_settings():
+    return {"settings": llm_settings.get(), "defaults": llm_settings.DEFAULTS, "presets": llm_settings.PRESETS,
+            "spec": {k: {"type": t, "min": lo, "max": hi} for k, (t, lo, hi) in llm_settings.SPEC.items()},
+            "ollama": llm_settings.ollama_state(), "gpu_fallback": llm.runtime.gpu_override}
+
+
+@app.put("/api/settings/llm")
+def put_llm_settings(patch: dict):
+    try:
+        saved = llm_settings.update(patch)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if "num_gpu" in patch:
+        llm.runtime.gpu_override = None      # an explicit choice replaces any automatic out-of-memory fallback
+    return {"settings": saved}
+
+
+@app.delete("/api/settings/llm")
+def reset_llm_settings():
+    llm.runtime.gpu_override = None
+    return {"settings": llm_settings.reset()}
+
+
+@app.post("/api/settings/llm/benchmark")
+def benchmark_llm():
+    try:
+        return llm_settings.benchmark()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(503, f"Benchmark failed: {exc}") from exc
 
 
 @app.post("/api/projects/{pid}/segments/{key}/regenerate")
@@ -298,21 +384,26 @@ def project_file(pid: str, path: str):
 
 # ------------------------------------------------------------------ publishing
 @app.get("/api/projects/{pid}/export/{fmt}")
-def export(pid: str, fmt: str, draft: bool = False):
+def export(pid: str, fmt: str, draft: bool = False, template: str | None = None, palette: str | None = None):
     p = _get(pid)
     if not p.segments:
         raise HTTPException(422, "Nothing to publish yet.")
     pending = [s.title for s in p.segments.values() if s.status != "approved"]
     if pending and not draft:
         raise HTTPException(422, "Approve every segment before publishing: " + ", ".join(pending))
+    template = template or p.publish_style.get("template")
+    palette = palette or p.publish_style.get("palette")
+    if template not in publisher.TEMPLATES or palette not in publisher.PALETTES:
+        raise HTTPException(422, "Unknown template or colour style.")
+    store.mutate(pid, lambda proj: setattr(proj, "publish_style", {"template": template, "palette": palette}))
     article = publisher.assemble(p, only_approved=not draft)
     slug = re.sub(r"[^A-Za-z0-9]+", "_", article.title)[:60].strip("_") or "article"
     out_dir = store.project_dir(pid) / "exports"
     if fmt == "docx":
-        path = publisher.to_docx(article, out_dir / f"{slug}.docx")
+        path = publisher.to_docx(article, out_dir / f"{slug}.docx", template, palette)
         media = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     elif fmt == "pdf":
-        path = publisher.to_pdf(article, out_dir / f"{slug}.pdf")
+        path = publisher.to_pdf(article, out_dir / f"{slug}{'_preview' if draft else ''}.pdf", template, palette)
         media = "application/pdf"
     elif fmt == "md":
         return Response(publisher.to_markdown(article), media_type="text/markdown",

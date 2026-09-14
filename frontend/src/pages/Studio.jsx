@@ -10,7 +10,7 @@ const TOOLS = [
   { key: "simplify", label: "Simplify", icon: "simple" },
   { key: "add_citations", label: "Add citations", icon: "cite" },
   { key: "polish", label: "Polish", icon: "polish" },
-  { key: "humanize", label: "Humanize", icon: "human" },
+  { key: "humanize", label: "Humanize", icon: "human", hint: "Paragraph-by-paragraph rewrite; keeps every citation, number and claim or leaves the paragraph unchanged" },
   { key: "strengthen_argument", label: "Strengthen", icon: "target" },
 ];
 
@@ -154,8 +154,44 @@ function SegmentBody({ seg, project, sources }) {
     if (m) return null;
     if (seg.key === "references") return b.split("\n").map((line, j) => <p key={`${i}-${j}`} className="ref-entry">{line}</p>);
     if (/^Appendix [A-Z]\./.test(b)) return <h4 key={i}>{b}</h4>;
-    return b.split(seg.key === "appendices" ? "\n" : /\n(?!\n)/).map((para, j) => <p key={`${i}-${j}`}><Inline text={para} sources={sources} /></p>);
+    return b.split(seg.key === "appendices" ? "\n" : /\n(?!\n)/).map((para, j) => <p key={`${i}-${j}`}><Flagged text={para} flags={seg.quality.flags || []} sources={sources} /></p>);
   });
+}
+
+/** Highlights sentences the hallucination filter could not fully verify. */
+function Flagged({ text, flags, sources }) {
+  const hits = [];
+  for (const [n, f] of flags.entries()) {
+    const probe = (f.sentence || "").slice(0, 90);
+    const at = probe ? text.indexOf(probe) : -1;
+    if (at >= 0) {
+      const end = text.indexOf(". ", at + Math.min(f.sentence.length, 200) - 2);
+      hits.push({ start: at, end: end > 0 ? end + 1 : text.length, flag: f, n });
+    }
+  }
+  if (!hits.length) return <Inline text={text} sources={sources} />;
+  hits.sort((a, b) => a.start - b.start);
+  const out = [];
+  let cursor = 0;
+  hits.forEach((h, k) => {
+    if (h.start < cursor) return;
+    out.push(<Inline key={`t${k}`} text={text.slice(cursor, h.start)} sources={sources} />);
+    out.push(
+      <mark key={`m${k}`} id={`flag-${h.n}`} className={`flag ${h.flag.verdict}`} title={`${VERDICT_LABEL[h.flag.verdict] || h.flag.verdict}: ${h.flag.reason}`}>
+        <Inline text={text.slice(h.start, h.end)} sources={sources} />
+      </mark>,
+    );
+    cursor = h.end;
+  });
+  out.push(<Inline key="tail" text={text.slice(cursor)} sources={sources} />);
+  return out;
+}
+
+const VERDICT_LABEL = { partial: "Partly supported", unsupported: "Not supported by the cited source", contradicted: "Contradicted by the source", unverified: "Could not be verified" };
+
+function scoreColor(v) {
+  if (v == null) return undefined;
+  return v >= 75 ? "var(--ok)" : v >= 50 ? "var(--warn)" : "var(--bad)";
 }
 
 export default function Studio({ project, setProject, navigate }) {
@@ -334,7 +370,7 @@ export default function Studio({ project, setProject, navigate }) {
             <h5>Text tools</h5>
             <div className="tools">
               {TOOLS.map((t) => (
-                <button key={t.key} className="tool" disabled={segBusy || ["title", "keywords", "references"].includes(active)} onClick={() => applyTool(t.key)}>
+                <button key={t.key} className="tool" title={t.hint} disabled={segBusy || ["title", "keywords", "references"].includes(active)} onClick={() => applyTool(t.key)}>
                   <Icon name={t.icon} size={15} />{t.label}
                 </button>
               ))}
@@ -363,6 +399,78 @@ export default function Studio({ project, setProject, navigate }) {
             )}
           </div>
 
+          {q.grounding?.checked > 0 && (
+            <div className="card">
+              <h5>Hallucination filter <Icon name="shield" size={14} /></h5>
+              <div className="score-row">
+                <span className="score-big mono" style={{ color: scoreColor(q.grounding.grounding_score) }}>{q.grounding.grounding_score}</span>
+                <span className="muted" style={{ fontSize: 12 }}>grounding score<br />claims backed by their sources</span>
+              </div>
+              <div className="metric"><span>Claims checked</span><span>{q.grounding.checked}</span></div>
+              <div className="metric"><span>Supported</span><span style={{ color: "var(--ok)" }}>{q.grounding.supported}{q.grounding.partial ? ` + ${q.grounding.partial} partly` : ""}</span></div>
+              <div className="metric"><span>Corrected from evidence</span><span>{q.grounding.corrected || 0}</span></div>
+              <div className="metric"><span>Removed as unsupported</span><span>{q.grounding.removed || 0}</span></div>
+              {q.grounding.auto_cited > 0 && <div className="metric"><span>Citations added</span><span>{q.grounding.auto_cited}</span></div>}
+              {q.grounding.sanitised > 0 && <div className="metric"><span>Artefacts cleaned</span><span>{q.grounding.sanitised}</span></div>}
+              {q.grounding.paragraphs_repaired > 0 && <div className="metric"><span>Incoherent paragraphs repaired</span><span>{q.grounding.paragraphs_repaired}</span></div>}
+              {q.flags?.length > 0 ? (
+                <div className="flag-list">
+                  <div style={{ fontSize: 12, fontWeight: 600, margin: "10px 0 6px" }}>Needs your review ({q.flags.length})</div>
+                  {q.flags.map((f, n) => (
+                    <button key={n} className={`flag-item ${f.verdict}`} onClick={() => document.getElementById(`flag-${n}`)?.scrollIntoView({ behavior: "smooth", block: "center" })}>
+                      <b>{VERDICT_LABEL[f.verdict] || f.verdict}</b>
+                      <span>“{f.sentence.slice(0, 110)}{f.sentence.length > 110 ? "…" : ""}”</span>
+                      {f.reason && <span className="muted">{f.reason}</span>}
+                    </button>
+                  ))}
+                </div>
+              ) : <div style={{ fontSize: 12, color: "var(--ok)", marginTop: 8 }}>No unverified claims remain.</div>}
+            </div>
+          )}
+
+          {q.style?.score != null && (
+            <div className="card">
+              <h5>Style & naturalness</h5>
+              <div className="score-row">
+                <span className="score-big mono" style={{ color: scoreColor(q.style.score) }}>{q.style.score}</span>
+                <span className="muted" style={{ fontSize: 12 }}>varied, specific,<br />non-formulaic prose</span>
+              </div>
+              <div className="metric"><span>Avg sentence length</span><span>{q.style.mean_sentence_words} w</span></div>
+              <div className="metric"><span>Sentence-length variation</span><span>{q.style.sentence_length_variation}</span></div>
+              <div className="metric"><span>Stock connectors</span><span>{Math.round(q.style.stock_connector_share * 100)}%</span></div>
+              <div className="metric"><span>Formulaic phrases /100 w</span><span>{q.style.generic_phrases_per_100_words}</span></div>
+              <div className="metric"><span>Lexical diversity</span><span>{q.style.lexical_diversity}</span></div>
+              {q.humanize?.attempted > 0 && (
+                <div className="humanize-report">
+                  <b>Last Humanize</b> · {timeAgo(q.humanize.at)}<br />
+                  Rewrote {q.humanize.rewritten}/{q.humanize.attempted} paragraphs · score {q.humanize.score_before} → {q.humanize.score_after}<br />
+                  Citations kept {q.humanize.citations_preserved} · numbers kept {q.humanize.numbers_preserved}
+                  {q.humanize.kept?.length > 0 && (
+                    <div className="muted" style={{ marginTop: 4 }}>
+                      {q.humanize.kept.length} paragraph(s) left unchanged because a rewrite would have lost content
+                      {q.humanize.kept[0]?.reasons?.[0] ? ` (e.g. ${q.humanize.kept[0].reasons[0]})` : ""}.
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="card">
+            <h5>Article review</h5>
+            {project.review?.issues?.length ? project.review.issues.map((it, n) => (
+              <div key={n} className="review-issue">
+                <div className="row between"><b>{project.segments[it.segment]?.title || it.segment}</b><span className="badge">{it.type}</span></div>
+                <div style={{ fontSize: 12.5, margin: "4px 0" }}>{it.issue}</div>
+                {it.applied ? <span className="badge ok">fixed automatically</span> : project.segments[it.segment] && (
+                  <Button size="sm" variant="soft" disabled={busy}
+                    onClick={() => { setActive(it.segment); run(() => api.revise(project.id, it.segment, it.instruction), "Applying the review fix…"); }}>Apply fix</Button>
+                )}
+              </div>
+            )) : <div className="muted" style={{ fontSize: 12 }}>{project.review?.at ? "No cross-segment inconsistencies found." : "Checks that research questions are answered, numbers match across sections and nothing contradicts."}</div>}
+            <Button size="sm" style={{ marginTop: 10 }} icon="refresh" disabled={busy} onClick={() => run(() => api.review(project.id), "Reviewing the whole article…")}>Run article review</Button>
+          </div>
+
           <div className="card">
             <h5>Version history <Icon name="history" size={14} /></h5>
             <div className="versions">
@@ -386,7 +494,7 @@ export default function Studio({ project, setProject, navigate }) {
             if (!ex) { toast("Couldn't map that selection — try selecting whole sentences.", "error"); return; }
             setSelection(ex); setBubble(null);
           }}>Revise selection</Button>
-          {["polish", "expand", "simplify"].map((t) => (
+          {["humanize", "polish", "expand"].map((t) => (
             <Button key={t} size="sm" variant="ghost" onClick={() => { const ex = sourceExcerpt(bubble.text); setBubble(null); if (ex) applyTool(t, ex); }}>
               {TOOLS.find((x) => x.key === t).label}
             </Button>

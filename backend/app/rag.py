@@ -94,6 +94,20 @@ class HybridIndex:
         candidates = [i for i in np.argsort(-fused)[: max(k * 4, 24)] if not kinds or self.chunks[i].source_kind in kinds]
         return [self.chunks[i] for i in self._mmr(candidates, fused, k, diversity)]
 
+    def search_within(self, query: str, source_ids: set[str] | None = None, k: int = 3) -> list[Chunk]:
+        """Most relevant passages, optionally restricted to specific sources (used to verify citations)."""
+        if not self.chunks:
+            return []
+        idx = [i for i, c in enumerate(self.chunks) if source_ids is None or c.source_id in source_ids]
+        if not idx:
+            return []
+        tf = (self._tfidf_matrix[idx] @ self._tfidf.transform([query]).T).toarray().ravel()
+        combined = tf / (tf.max() or 1)
+        if self._bm25 is not None:
+            bm = np.asarray(self._bm25.get_scores(tokenize(query) or ["_"]))[idx]
+            combined = combined + 0.6 * bm / (bm.max() or 1)
+        return [self.chunks[idx[i]] for i in np.argsort(-combined)[:k]]
+
     def _mmr(self, candidates: list[int], relevance: np.ndarray, k: int, diversity: float) -> list[int]:
         if not candidates:
             return []
