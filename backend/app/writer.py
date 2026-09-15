@@ -28,7 +28,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import numpy as np
 
 from . import analysis as analysis_mod
-from . import citations, factcheck, jobs, llm, originality, research, store, style
+from . import citations, estimate, factcheck, jobs, llm, originality, research, store, style
 from .blueprints import BLUEPRINTS, COMMON_RULES, Blueprint, Move, generation_order, length_profile, tone_instruction
 from .checkpoints import Checkpoints, signature
 from .ingest import chunk_text, heuristic_metadata, llm_metadata, read_any, strip_back_matter
@@ -45,6 +45,8 @@ EVIDENCE_SEGMENTS = ("introduction", "literature_review", "methodology", "result
 LENGTH_LIMITS = {"abstract": (100, 400)}
 DEFAULT_LIMITS = (100, 6000)
 _lane = threading.local()
+_checkpoints: dict[str, Checkpoints] = {}
+_checkpoints_lock = threading.Lock()
 
 
 def lane_prefix() -> str:
@@ -60,7 +62,11 @@ class Workspace:
         self._index: HybridIndex | None = None
         self._fp: originality.SourceFingerprint | None = None
         self._lock = threading.RLock()
-        self.cp = Checkpoints(self.dir, on_save=self._checkpoint_saved)
+        # One checkpoint store per project: parallel Studio jobs must not overwrite each other's saved steps.
+        with _checkpoints_lock:
+            if pid not in _checkpoints:
+                _checkpoints[pid] = Checkpoints(self.dir, on_save=self._checkpoint_saved)
+            self.cp = _checkpoints[pid]
 
     @property
     def project(self) -> Project:
@@ -375,6 +381,7 @@ def generate_article(pid: str, req: GenerateRequest) -> None:
            + f" · {req.agents} agent{'s' if req.agents > 1 else ''} · {req.depth} mode")
 
     try:
+        estimate_run(ws, req, keys)
         build_corpus(ws, req)
         ws.begin_stage("writing")
         run_segments(ws, keys, req.depth, req.agents)
@@ -385,12 +392,36 @@ def generate_article(pid: str, req: GenerateRequest) -> None:
         raise
     _stop_run(ws, keys, "completed")
     p = ws.project
+    try:
+        estimate.record(p)
+    except Exception:  # noqa: BLE001 - calibration is best-effort
+        log.exception("could not record timing history")
     failed = [s.title for k, s in p.segments.items() if k in keys and s.status == "failed"]
     if failed:
         jobs.emit(pid, "log", f"⚠ Finished with {len(failed)} segment(s) needing attention: {', '.join(failed)} — use Regenerate in the Studio")
     store.mutate(pid, lambda proj: setattr(proj, "stage", "studio"))
     elapsed = p.run.elapsed_before
     jobs.emit(pid, "done", f"All selected segments are drafted and ready for review · total time {int(elapsed // 3600)}h {int(elapsed % 3600 // 60)}m {int(elapsed % 60)}s")
+
+
+def estimate_run(ws: Workspace, req: GenerateRequest, keys: list[str]) -> None:
+    """Probe the model speed (a few seconds) and publish the estimated fabrication time before any real work."""
+    ws.stage("Estimating fabrication time", "estimate")
+    try:
+        speed = estimate.probe_speed()
+        estimate.remember_speed(speed["model"], speed["tok_s"])
+        result = estimate.compute(ws.project, req, keys, speed)
+    except Exception as exc:  # noqa: BLE001 - never let the estimate stop the article
+        log.exception("time estimate failed")
+        ws.log(f"⚠ Could not estimate the fabrication time ({exc}); starting anyway")
+        return
+    store.mutate(ws.pid, lambda proj: setattr(proj.run, "estimate", result))
+    st = result["stages"]
+    parts = [f"{name} {estimate.fmt(st[key])}" for key, name in
+             (("parsing", "reading"), ("research", "research"), ("analysis", "analysis"), ("writing", "writing"), ("guard", "review")) if st[key] >= 30]
+    speed_note = f"{result['tok_s']} tok/s" + ("" if result["speed_source"] == "probe" else f" from {result['speed_source']}")
+    ws.log(f"⏱ Estimated fabrication time ≈ {estimate.fmt(result['total'])} · " + " · ".join(parts)
+           + f" (model speed {speed_note}, measured in {result['probe_seconds']}s)")
 
 
 def _stop_run(ws: Workspace, keys: list[str], status: str) -> None:
@@ -1195,7 +1226,7 @@ def humanize_segment(pid: str, key: str, selection: str = "") -> None:
 def regenerate_segment(pid: str, key: str) -> None:
     ws = Workspace(pid)
     p = ws.project
-    llm.runtime.configure(int(p.options.get("agents", 1)), notify=ws.log)
+    llm.runtime.ensure(int(p.options.get("agents", 1)), notify=ws.log)
     ws.cp.clear_segment(key)
     write_segment(ws, key, p.options.get("depth", "thorough"))
 
@@ -1218,17 +1249,21 @@ def manual_edit(pid: str, key: str, content: str) -> Project:
 def recover_interrupted_runs() -> None:
     """On server start, turn runs that were cut off (server stopped mid-fabrication) into resumable 'stopped' runs."""
     for p in store.list_all():
-        if p.run.status != "running":
+        interrupted = p.run.status == "running"
+        # Studio jobs (regenerate/revise) can be cut off too, even after the fabrication run completed.
+        if not interrupted and not any(s.status in {"working", "revising"} for s in p.segments.values()):
             continue
 
         def apply(proj: Project):
             end = proj.updated
-            if proj.run.session_started:
-                proj.run.elapsed_before = round(proj.run.elapsed_before + max(0.0, end - proj.run.session_started), 1)
-            _close_stages(proj.run, end)
+            if interrupted:
+                if proj.run.session_started:
+                    proj.run.elapsed_before = round(proj.run.elapsed_before + max(0.0, end - proj.run.session_started), 1)
+                _close_stages(proj.run, end)
+                proj.run.session_started, proj.run.status = None, "stopped"
             for key, started in list(proj.run.segment_started.items()):
                 proj.run.segment_seconds[key] = round(proj.run.segment_seconds.get(key, 0) + max(0.0, end - started), 1)
-            proj.run.segment_started, proj.run.session_started, proj.run.status = {}, None, "stopped"
+            proj.run.segment_started = {}
             for seg in proj.segments.values():
                 if seg.status in {"working", "revising"}:
                     seg.status = "queued" if not seg.content else "draft"

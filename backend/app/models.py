@@ -147,6 +147,7 @@ class RunInfo(BaseModel):
     segment_started: dict[str, float] = {}
     agents: int = 1
     checkpoints: int = 0
+    estimate: dict = {}                           # pre-run time estimate (see estimate.py)
 
 
 class ProjectCreate(BaseModel):

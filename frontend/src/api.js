@@ -47,14 +47,6 @@ export const api = {
   saveLlmSettings: (patch) => request("/settings/llm", { method: "PUT", body: patch }),
   resetLlmSettings: () => request("/settings/llm", { method: "DELETE" }),
   benchmark: () => request("/settings/llm/benchmark", { method: "POST" }),
-  async previewPdf(id, style) {
-    const tab = window.open("", "_blank");
-    const res = await request(`/projects/${id}/export/pdf?draft=true&template=${style.template}&palette=${style.palette}`);
-    const url = URL.createObjectURL(await res.blob());
-    if (tab) tab.location.href = url;
-    else window.location.assign(url);
-    setTimeout(() => URL.revokeObjectURL(url), 120000);
-  },
   setLengths: (id, lengths) => request(`/projects/${id}/lengths`, { method: "PUT", body: { lengths } }),
   generate: (id, data) => request(`/projects/${id}/generate`, { method: "POST", body: data }),
   revise: (id, key, instruction, selection = "") => request(`/projects/${id}/segments/${key}/revise`, { method: "POST", body: { instruction, selection } }),

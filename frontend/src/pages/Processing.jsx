@@ -3,6 +3,7 @@ import { api } from "../api.js";
 import { Button, Icon, useToast } from "../ui.jsx";
 
 const STAGES = [
+  { key: "estimate", title: "Estimating time", sub: "Speed probe · work inventory" },
   { key: "parsing", title: "Reading references", sub: "Parse · metadata · chunk" },
   { key: "research", title: "Online research", sub: "Scholarly databases & web" },
   { key: "indexing", title: "Building the index", sub: "Neural + BM25 + TF-IDF fusion" },
@@ -35,6 +36,45 @@ function useNow(active) {
     return () => clearInterval(t);
   }, [active]);
   return now;
+}
+
+const PRE_WRITING = ["parsing", "research", "indexing", "analysis"];
+
+/**
+ * Live projection from the pre-run estimate: finished work replaces its estimate with the real time, and the pace of
+ * finished work (actual ÷ estimated) corrects what is left — so the projection tightens as the run goes on.
+ */
+export function projectRun(project, now) {
+  const run = project.run || {};
+  const est = run.estimate || {};
+  if (!est.total) return null;
+  const stageActual = (k) => (run.stages?.[k] || 0) + (run.stage_started?.[k] && run.status === "running" ? now - run.stage_started[k] : 0);
+  const segActual = (k) => (run.segment_seconds?.[k] || 0) + (run.segment_started?.[k] && run.status === "running" ? now - run.segment_started[k] : 0);
+  const segs = est.segments || {};
+  const doneSeg = (k) => ["draft", "approved"].includes(project.segments[k]?.status) && !run.segment_started?.[k];
+
+  let estDone = 0, actualDone = 0, remaining = 0;
+  for (const k of PRE_WRITING) {
+    const e = est.stages?.[k] || 0;
+    const open = !!run.stage_started?.[k];
+    if (run.stages?.[k] && !open) { estDone += e; actualDone += stageActual(k); }
+    else remaining += Math.max(open ? e * 0.1 : e, e - stageActual(k));
+  }
+  const segTotal = Object.values(segs).reduce((a, b) => a + b, 0);
+  let segLeft = 0;
+  for (const [k, e] of Object.entries(segs)) {
+    if (doneSeg(k)) { estDone += e; actualDone += segActual(k); }
+    else segLeft += Math.max(e * 0.1, e - segActual(k));
+  }
+  // Lanes run segments side by side, so the writing wall-clock shrinks in proportion to the segment work left.
+  remaining += segTotal ? (est.stages?.writing || 0) * (segLeft / segTotal) : 0;
+  const reviewDone = run.stages?.guard && !run.stage_started?.guard;
+  if (!reviewDone) remaining += Math.max((est.stages?.guard || 0) * 0.1, (est.stages?.guard || 0) - stageActual("guard"));
+
+  const pace = estDone > 180 ? Math.min(1.8, Math.max(0.6, actualDone / estDone)) : 1;
+  const elapsed = runElapsed(run, now);
+  const left = run.status === "running" ? remaining * pace : 0;
+  return { estimate: est.total, elapsed, left, projected: elapsed + left, pace, est };
 }
 
 function LengthChip({ project, seg, setProject }) {
@@ -88,6 +128,11 @@ export default function Processing({ project, setProject, events, navigate }) {
   const [resuming, setResuming] = useState(false);
 
   const total = runElapsed(run, now);
+  const projection = projectRun(project, now);
+  const est = run.estimate || {};
+  const estimating = working && !est.total && current === "estimate";
+  const endsAt = projection && working ? new Date((now + projection.left) * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+  const progressPct = projection ? Math.min(100, (projection.elapsed / Math.max(1, finished ? projection.elapsed : projection.projected)) * 100) : 0;
   const stageSeconds = (key) => (run.stages?.[key] || 0) + (run.stage_started?.[key] && run.status === "running" ? now - run.stage_started[key] : 0);
   const segSeconds = (key) => (run.segment_seconds?.[key] || 0) + (run.segment_started?.[key] && run.status === "running" ? now - run.segment_started[key] : 0);
 
@@ -129,13 +174,34 @@ export default function Processing({ project, setProject, events, navigate }) {
           </div>
         </div>
         <div className="timer-card">
-          <div className="timer-label"><span className={`dot ${working ? "live" : finished ? "ok" : ""}`} /> {working ? "Fabricating" : finished ? "Completed in" : "Time so far"}</div>
-          <div className="timer-value mono">{fmtDuration(total)}</div>
-          <div className="timer-sub muted">
-            {working && current && run.stage_started?.[current === "guard" ? "writing" : current] !== undefined
-              ? `this stage ${fmtDuration(stageSeconds(current === "guard" ? "writing" : current), true)}`
-              : `${run.sessions || 0} session${run.sessions === 1 ? "" : "s"}`}
+          <div className="timer-cols">
+            <div>
+              <div className="timer-label"><span className={`dot ${working ? "live" : finished ? "ok" : ""}`} /> {working ? "Fabricating" : finished ? "Completed in" : "Time so far"}</div>
+              <div className="timer-value mono">{fmtDuration(total)}</div>
+              <div className="timer-sub muted">
+                {working && current && run.stage_started?.[current === "guard" ? "writing" : current] !== undefined
+                  ? `this stage ${fmtDuration(stageSeconds(current === "guard" ? "writing" : current), true)}`
+                  : `${run.sessions || 0} session${run.sessions === 1 ? "" : "s"}`}
+              </div>
+            </div>
+            <div className="timer-divider" aria-hidden="true" />
+            <div className="timer-estimate" title={est.total ? `Model speed ${est.tok_s} tok/s (${est.speed_source}) · probe took ${est.probe_seconds}s` : undefined}>
+              <div className="timer-label"><Icon name="clock" size={12} stroke={2} /> Estimated time</div>
+              <div className={`timer-value mono ${estimating ? "shimmer-text" : ""}`}>{est.total ? fmtDuration(est.total) : estimating ? "--:--:--" : "—"}</div>
+              <div className="timer-sub muted">
+                {estimating ? "measuring model speed…"
+                  : !projection ? "estimated at the start of a run"
+                  : working ? `≈ ${fmtDuration(projection.left, true)} left · ends ~${endsAt}`
+                  : finished ? `${total >= est.total ? "+" : "−"}${fmtDuration(Math.abs(total - est.total), true)} vs estimate`
+                  : `≈ ${fmtDuration(Math.max(0, est.total - total), true)} of work left`}
+              </div>
+            </div>
           </div>
+          {projection && (
+            <div className="eta-bar" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progressPct)} aria-label="Fabrication progress against the estimate">
+              <i style={{ width: `${progressPct}%` }} />
+            </div>
+          )}
         </div>
       </div>
 
@@ -144,13 +210,19 @@ export default function Processing({ project, setProject, events, navigate }) {
           <div className="stage-list">
             {STAGES.map((s) => {
               const state = current === s.key && !finished ? (working ? "active" : "failed") : seen.has(s.key) || run.stages?.[s.key] ? "done" : "";
-              const secs = stageSeconds(s.key);
+              const secs = s.key === "estimate" ? (seen.has("estimate") ? est.probe_seconds || 0 : 0) : stageSeconds(s.key);
+              const planned = s.key === "estimate" ? 0 : est.stages?.[s.key] || 0;
               return (
                 <div key={s.key} className={`stage ${state}`}>
                   <span className="s-dot">{state === "done" ? <Icon name="check" size={13} stroke={2.4} /> : state === "failed" ? <Icon name="x" size={13} stroke={2.4} /> : null}</span>
                   <span style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
                     <span><b>{s.title}</b><small>{s.sub}</small></span>
-                    {secs > 0 && <span className="mono muted" style={{ fontSize: 11, whiteSpace: "nowrap" }}>{fmtDuration(secs, true)}</span>}
+                    {(secs > 0 || planned >= 1) && (
+                      <span className="mono muted stage-time">
+                        {secs > 0 ? fmtDuration(secs, true) : ""}
+                        {planned >= 1 && <span className="stage-est">{secs > 0 ? " / " : ""}~{fmtDuration(planned, true)}</span>}
+                      </span>
+                    )}
                   </span>
                 </div>
               );
@@ -178,7 +250,9 @@ export default function Processing({ project, setProject, events, navigate }) {
                   {s.status === "draft" || s.status === "approved"
                     ? <span className="mono muted" style={{ fontSize: 11 }}>{s.quality.words}w{secs ? ` · ${fmtDuration(secs, true)}` : ""}</span>
                     : s.status === "working"
-                      ? <span className="mono muted" style={{ fontSize: 11 }}>{fmtDuration(secs, true)}</span>
+                      ? <span className="mono muted" style={{ fontSize: 11 }}>{fmtDuration(secs, true)}{est.segments?.[s.key] ? ` / ~${fmtDuration(est.segments[s.key], true)}` : ""}</span>
+                      : s.status === "queued" && working && est.segments?.[s.key]
+                        ? <span className="mono muted" style={{ fontSize: 11 }} title="Estimated writing time">~{fmtDuration(est.segments[s.key], true)}</span>
                       : s.status === "failed" && !working
                         ? <span className="mono" style={{ fontSize: 11, color: "var(--bad)" }}>failed</span>
                         : <LengthChip project={project} seg={s} setProject={setProject} />}

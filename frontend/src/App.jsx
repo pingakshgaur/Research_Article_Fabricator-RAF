@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api.js";
-import { Icon } from "./ui.jsx";
+import { AmbientLight, Icon } from "./ui.jsx";
 import DevTools from "./DevTools.jsx";
 import Home from "./pages/Home.jsx";
 import Setup from "./pages/Setup.jsx";
@@ -11,7 +11,7 @@ import Studio from "./pages/Studio.jsx";
 import Publish from "./pages/Publish.jsx";
 
 // Must match API_VERSION in backend/app/main.py.
-const EXPECTED_API = "1.3.0";
+const EXPECTED_API = "1.4.0";
 
 const STEPS = [
   { key: "setup", label: "Topic & title", hint: "What are we writing?" },
@@ -102,9 +102,11 @@ export default function App() {
   };
 
   const pageProps = { project, setProject, refresh, navigate, events, health };
+  const segmentJobs = Object.values(project?.busy_segments || {});
 
   return (
     <div className="shell">
+      <AmbientLight />
       <header className="topbar">
         <button className="brand" onClick={() => navigate(null)} aria-label="RAF home">
           <span className="brand-mark">RAF</span>
@@ -113,6 +115,12 @@ export default function App() {
         <div className="topbar-spacer" />
         {project?.busy && (
           <span className="status-pill fade"><span className="dot live" />{project.busy}</span>
+        )}
+        {!project?.busy && segmentJobs.length > 0 && (
+          <span className="status-pill fade" title={segmentJobs.join("\n")}>
+            <span className="dot live" />
+            {segmentJobs.length === 1 ? segmentJobs[0] : `Studio · ${segmentJobs.length} segments in progress`}
+          </span>
         )}
         <span className="status-pill" title={health?.error || ""}>
           <span className={`dot ${health?.ollama && health?.model_available ? "ok" : health ? "bad" : ""}`} />

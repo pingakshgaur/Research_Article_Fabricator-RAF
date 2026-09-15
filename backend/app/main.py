@@ -20,7 +20,7 @@ from .models import (GenerateRequest, LengthsUpdate, ManualEdit, Project, Projec
                      ToneUpdate, ToolRequest)
 
 # Bump whenever the backend changes in a way the UI depends on; the UI warns when the running server is older.
-API_VERSION = "1.3.0"
+API_VERSION = "1.4.0"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 app = FastAPI(title="RAF — Research Article Fabricator", version=API_VERSION)
@@ -42,8 +42,23 @@ def _get(pid: str) -> Project:
 
 
 def _busy(pid: str) -> None:
-    if jobs.running(pid):
-        raise HTTPException(409, f"RAF is busy with “{jobs.running(pid)}” for this project. Please wait for it to finish.")
+    """Project-wide operations wait for every job, including Studio segment jobs."""
+    name = jobs.any_running(pid)
+    if name:
+        raise HTTPException(409, f"RAF is busy with “{name}” for this project. Please wait for it to finish.")
+
+
+def _segment_free(pid: str, key: str) -> None:
+    """Manual changes to one segment only wait for jobs on that segment (or a project-wide job)."""
+    reason = jobs.segment_block_reason(pid, key, limit=False)
+    if reason:
+        raise HTTPException(409, reason)
+
+
+def _start_segment_job(pid: str, key: str, name: str, fn) -> None:
+    reason = jobs.start_segment(pid, key, name, fn)
+    if reason:
+        raise HTTPException(409, reason)
 
 
 def _safe_name(name: str) -> str:
@@ -54,6 +69,8 @@ def _safe_name(name: str) -> str:
 def _view(p: Project) -> dict:
     data = p.model_dump()
     data["busy"] = jobs.running(p.id)
+    data["busy_segments"] = jobs.segment_jobs(p.id)
+    data["max_segment_jobs"] = jobs.MAX_SEGMENT_JOBS
     return data
 
 
@@ -233,10 +250,10 @@ def _segment_or_404(p: Project, key: str):
 def revise(pid: str, key: str, body: ReviseRequest):
     p = _get(pid)
     _segment_or_404(p, key)
-    _busy(pid)
     if len(body.instruction.strip()) < 3:
         raise HTTPException(422, "Describe the change you want.")
-    jobs.start(pid, f"Revising {BLUEPRINTS[key].title}", lambda: writer.revise_segment(pid, key, body.instruction, body.selection, reason=f"revision: {body.instruction[:80]}"))
+    _start_segment_job(pid, key, f"Revising {BLUEPRINTS[key].title}",
+                       lambda: writer.revise_segment(pid, key, body.instruction, body.selection, reason=f"revision: {body.instruction[:80]}"))
     return _view(_get(pid))
 
 
@@ -244,13 +261,12 @@ def revise(pid: str, key: str, body: ReviseRequest):
 def tool(pid: str, key: str, body: ToolRequest):
     p = _get(pid)
     _segment_or_404(p, key)
-    _busy(pid)
     label = f"{body.tool.replace('_', ' ').title()} · {BLUEPRINTS[key].title}"
     if body.tool == "humanize":
-        jobs.start(pid, label, lambda: writer.humanize_segment(pid, key, body.selection))
+        _start_segment_job(pid, key, label, lambda: writer.humanize_segment(pid, key, body.selection))
     else:
         instruction = writer.TOOL_INSTRUCTIONS[body.tool]
-        jobs.start(pid, label, lambda: writer.revise_segment(pid, key, instruction, body.selection, reason=f"tool: {body.tool}"))
+        _start_segment_job(pid, key, label, lambda: writer.revise_segment(pid, key, instruction, body.selection, reason=f"tool: {body.tool}"))
     return _view(_get(pid))
 
 
@@ -337,15 +353,14 @@ def benchmark_llm():
 def regenerate(pid: str, key: str):
     p = _get(pid)
     _segment_or_404(p, key)
-    _busy(pid)
-    jobs.start(pid, f"Regenerating {BLUEPRINTS[key].title}", lambda: writer.regenerate_segment(pid, key))
+    _start_segment_job(pid, key, f"Regenerating {BLUEPRINTS[key].title}", lambda: writer.regenerate_segment(pid, key))
     return _view(_get(pid))
 
 
 @app.put("/api/projects/{pid}/segments/{key}")
 def edit(pid: str, key: str, body: ManualEdit):
     p = _get(pid)
-    _busy(pid)
+    _segment_free(pid, key)
     if key not in p.segments:
         if key not in {"title", "keywords", "abstract"}:
             raise HTTPException(404, "Segment not found")
@@ -359,6 +374,7 @@ def edit(pid: str, key: str, body: ManualEdit):
 @app.post("/api/projects/{pid}/segments/{key}/approve")
 def approve(pid: str, key: str, approved: bool = True):
     _segment_or_404(_get(pid), key)
+    _segment_free(pid, key)
 
     def apply(p: Project):
         p.segments[key].status = "approved" if approved else "draft"
@@ -368,6 +384,7 @@ def approve(pid: str, key: str, approved: bool = True):
 @app.post("/api/projects/{pid}/segments/{key}/restore/{index}")
 def restore(pid: str, key: str, index: int):
     seg = _segment_or_404(_get(pid), key)
+    _segment_free(pid, key)
     if not 0 <= index < len(seg.versions):
         raise HTTPException(404, "Version not found")
     return _view(writer.manual_edit(pid, key, seg.versions[index].content))

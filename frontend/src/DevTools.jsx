@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "./api.js";
-import { Button, Icon, Spinner, Toggle, useToast } from "./ui.jsx";
+import { Button, Icon, Select, Spinner, Toggle, useToast } from "./ui.jsx";
 
 const GROUPS = [
   {
@@ -49,9 +49,8 @@ function Field({ f, spec, value, onChange }) {
         {f.options ? null : !f.text && <span className="mono">{value}</span>}
       </div>
       {f.options ? (
-        <select id={`dev-${f.key}`} className="select" value={value} onChange={(e) => onChange(Number(e.target.value))}>
-          {f.options.map((o) => <option key={o} value={o}>{o.toLocaleString()} tokens</option>)}
-        </select>
+        <Select id={`dev-${f.key}`} value={value} onChange={onChange}
+          options={f.options.map((o) => ({ value: o, label: `${o.toLocaleString()} tokens` }))} />
       ) : f.text ? (
         <input id={`dev-${f.key}`} className="input" value={value} onChange={(e) => onChange(e.target.value)} />
       ) : (
@@ -132,12 +131,11 @@ export default function DevTools({ open, onClose }) {
           <div className="drawer-body">
             <section className="card">
               <h5>Model</h5>
-              <select className="select" value={form.model} onChange={(e) => set("model")(e.target.value)} aria-label="Model">
-                {[...new Set([form.model, ...installed.map((m) => m.name)])].map((name) => {
+              <Select value={form.model} onChange={set("model")} aria-label="Model"
+                options={[...new Set([form.model, ...installed.map((m) => m.name)])].map((name) => {
                   const m = installed.find((x) => x.name === name);
-                  return <option key={name} value={name}>{name}{m ? ` · ${m.parameters} · ${m.quantization} · ${m.size_gb} GB` : data.ollama?.error ? "" : " (not installed)"}</option>;
-                })}
-              </select>
+                  return { value: name, label: name, hint: m ? `${m.parameters} · ${m.quantization} · ${m.size_gb} GB` : data.ollama?.error ? "" : "not installed" };
+                })} />
               <div className="dev-help" style={{ marginTop: 8 }}>
                 {loaded.length ? loaded.map((m) => (
                   <div key={m.name}>Loaded now: <b>{m.name}</b> · {m.size_gb} GB total · {m.vram_gb} GB on GPU ({m.size_gb ? Math.round((m.vram_gb / m.size_gb) * 100) : 0}%) · context {m.context?.toLocaleString?.() || "–"}</div>

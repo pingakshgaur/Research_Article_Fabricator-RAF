@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { api } from "../api.js";
-import { Button, Segmented, useToast } from "../ui.jsx";
+import { Button, Combo, Segmented, Select, useToast } from "../ui.jsx";
 
 const DISCIPLINES = ["Management & Business", "Economics & Finance", "Computer Science & AI", "Engineering", "Medicine & Public Health",
   "Psychology", "Education", "Sociology", "Environmental Science", "Biology & Life Sciences", "Law & Policy", "Humanities & History"];
@@ -62,14 +62,11 @@ export default function Setup({ project, navigate, setProject }) {
         <div className="grid-2 rise" style={{ "--i": 5 }}>
           <div className="field">
             <label htmlFor="discipline">Discipline</label>
-            <input id="discipline" className="input" list="disciplines" value={form.discipline} onChange={set("discipline")} placeholder="Choose or type a field" />
-            <datalist id="disciplines">{DISCIPLINES.map((d) => <option key={d} value={d} />)}</datalist>
+            <Combo id="discipline" value={form.discipline} onChange={set("discipline")} suggestions={DISCIPLINES} placeholder="Choose or type a field" />
           </div>
           <div className="field">
             <label htmlFor="type">Article type</label>
-            <select id="type" className="select" value={form.article_type} onChange={set("article_type")}>
-              {TYPES.map((t) => <option key={t}>{t}</option>)}
-            </select>
+            <Select id="type" value={form.article_type} onChange={set("article_type")} options={TYPES.map((t) => ({ value: t, label: t }))} />
           </div>
         </div>
 

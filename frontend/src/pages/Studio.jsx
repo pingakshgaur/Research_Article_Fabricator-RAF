@@ -194,7 +194,7 @@ function scoreColor(v) {
   return v >= 75 ? "var(--ok)" : v >= 50 ? "var(--warn)" : "var(--bad)";
 }
 
-export default function Studio({ project, setProject, navigate }) {
+export default function Studio({ project, setProject, navigate, events }) {
   const toast = useToast();
   const keys = ORDER.filter((k) => project.segments[k]);
   const [active, setActive] = useState(() => keys.find((k) => project.segments[k].status !== "approved") || keys[0]);
@@ -207,11 +207,27 @@ export default function Studio({ project, setProject, navigate }) {
   const sources = useSources(project);
 
   const seg = project.segments[active];
-  const busy = !!project.busy;
-  const segBusy = busy || ["working", "revising", "queued"].includes(seg?.status);
+  const busy = !!project.busy;                                   // exclusive project job (fabrication, review, import)
+  const jobs = project.busy_segments || {};                      // segment key -> Studio job name
+  const jobCount = Object.keys(jobs).length;
+  const maxJobs = project.max_segment_jobs || 3;
+  const isBusy = (k) => busy || !!jobs[k] || ["working", "revising"].includes(project.segments[k]?.status);
+  const segBusy = isBusy(active);
+  const atLimit = !segBusy && jobCount >= maxJobs;              // this segment is free, but every job slot is taken
+  const limitHint = atLimit ? `RAF is already working on ${maxJobs} segments — wait for one to finish` : undefined;
   const approved = keys.filter((k) => project.segments[k].status === "approved").length;
 
   useEffect(() => { setEditing(false); setSelection(""); setBubble(null); }, [active]);
+
+  // Tell the author when a background segment job finishes while they are looking at something else.
+  const lastEvent = events[events.length - 1];
+  const openedAt = useRef(Date.now() / 1000);
+  useEffect(() => {
+    if (lastEvent?.kind !== "job" || !lastEvent.key || lastEvent.state === "started" || lastEvent.t < openedAt.current) return;
+    const title = project.segments[lastEvent.key]?.title || lastEvent.key;
+    if (lastEvent.state === "finished") toast(`${title} is ready${lastEvent.key === active ? "" : " — open it to review"}`);
+    else toast(`${lastEvent.job} failed`, "error");
+  }, [lastEvent]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const onUp = () => {
@@ -269,6 +285,11 @@ export default function Studio({ project, setProject, navigate }) {
           {project.run?.elapsed_before > 0 && (
             <span className="badge mono" title="Total fabrication time across all sessions">⏱ {fmtDuration(project.run.elapsed_before, true)}</span>
           )}
+          {jobCount > 0 && (
+            <span className="badge mono jobs-badge" title={Object.values(jobs).join("\n")}>
+              <Spinner size={11} /> {jobCount} / {maxJobs} in progress
+            </span>
+          )}
           <span className="badge accent mono">{approved} / {keys.length} approved</span>
           <Button variant="primary" iconRight="arrow" disabled={!approved} onClick={() => navigate(project.id, "published")}>Publish</Button>
         </div>
@@ -279,9 +300,9 @@ export default function Studio({ project, setProject, navigate }) {
           {keys.map((k) => {
             const s = project.segments[k];
             return (
-              <button key={k} className={k === active ? "on" : ""} onClick={() => setActive(k)}>
+              <button key={k} className={`${k === active ? "on" : ""} ${jobs[k] ? "working" : ""}`} onClick={() => setActive(k)} title={jobs[k]}>
                 <span>{s.title}</span>
-                <span className={`status-dot ${s.status}`} title={s.status} />
+                {jobs[k] ? <Spinner size={12} /> : <span className={`status-dot ${s.status}`} title={s.status} />}
               </button>
             );
           })}
@@ -309,8 +330,9 @@ export default function Studio({ project, setProject, navigate }) {
               ) : (
                 <>
                   <Button size="sm" variant="ghost" icon="edit" disabled={segBusy} onClick={() => { setDraft(seg.content); setEditing(true); }}>Edit</Button>
-                  <Button size="sm" variant="ghost" icon="refresh" disabled={segBusy}
-                    onClick={() => confirm(`Rewrite “${seg.title}” from scratch?`) && run(() => api.regenerate(project.id, active), "Regenerating segment…")}>Regenerate</Button>
+                  <Button size="sm" variant="ghost" icon="refresh" disabled={segBusy || atLimit} title={limitHint}
+                    onClick={() => confirm(`Rewrite “${seg.title}” from scratch?`) && run(() => api.regenerate(project.id, active),
+                      `Regenerating ${seg.title} — you can keep working on other segments meanwhile`)}>Regenerate</Button>
                   {seg.status === "approved" ? (
                     <Button size="sm" onClick={() => run(() => api.approve(project.id, active, false))}>Unapprove</Button>
                   ) : (
@@ -333,7 +355,7 @@ export default function Studio({ project, setProject, navigate }) {
           ) : (
             <article ref={paperRef} className={`paper fade ${segBusy ? "busy" : ""}`} key={active + seg.versions.length}>
               {segBusy && (
-                <div className="busy-veil"><div className="card"><Spinner size={18} /><span>{project.busy || "RAF is working on this segment…"}</span></div></div>
+                <div className="busy-veil"><div className="card"><Spinner size={18} /><span>{project.busy || jobs[active] || "RAF is working on this segment…"}</span></div></div>
               )}
               <div className="row between">
                 <div className="mono muted" style={{ fontSize: 11, letterSpacing: ".14em", textTransform: "uppercase" }}>§ {seg.title}</div>
@@ -362,7 +384,8 @@ export default function Studio({ project, setProject, navigate }) {
               <textarea className="textarea" rows={4} value={instruction} onChange={(e) => setInstruction(e.target.value)}
                 placeholder={`What should change in the ${seg.title.toLowerCase()}? e.g. “Add a paragraph contrasting developing and developed economies.”`}
                 onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submitRevision(e); }} />
-              <Button variant="primary" icon="send" disabled={segBusy || instruction.trim().length < 3}>Revise segment</Button>
+              <Button variant="primary" icon="send" disabled={segBusy || atLimit || instruction.trim().length < 3} title={limitHint}>Revise segment</Button>
+              {atLimit && <span className="muted" style={{ fontSize: 11.5 }}>{limitHint}.</span>}
             </form>
           </div>
 
@@ -370,7 +393,7 @@ export default function Studio({ project, setProject, navigate }) {
             <h5>Text tools</h5>
             <div className="tools">
               {TOOLS.map((t) => (
-                <button key={t.key} className="tool" title={t.hint} disabled={segBusy || ["title", "keywords", "references"].includes(active)} onClick={() => applyTool(t.key)}>
+                <button key={t.key} className="tool" title={limitHint || t.hint} disabled={segBusy || atLimit || ["title", "keywords", "references"].includes(active)} onClick={() => applyTool(t.key)}>
                   <Icon name={t.icon} size={15} />{t.label}
                 </button>
               ))}
@@ -463,12 +486,13 @@ export default function Studio({ project, setProject, navigate }) {
                 <div className="row between"><b>{project.segments[it.segment]?.title || it.segment}</b><span className="badge">{it.type}</span></div>
                 <div style={{ fontSize: 12.5, margin: "4px 0" }}>{it.issue}</div>
                 {it.applied ? <span className="badge ok">fixed automatically</span> : project.segments[it.segment] && (
-                  <Button size="sm" variant="soft" disabled={busy}
+                  <Button size="sm" variant="soft" disabled={isBusy(it.segment) || jobCount >= maxJobs}
                     onClick={() => { setActive(it.segment); run(() => api.revise(project.id, it.segment, it.instruction), "Applying the review fix…"); }}>Apply fix</Button>
                 )}
               </div>
             )) : <div className="muted" style={{ fontSize: 12 }}>{project.review?.at ? "No cross-segment inconsistencies found." : "Checks that research questions are answered, numbers match across sections and nothing contradicts."}</div>}
-            <Button size="sm" style={{ marginTop: 10 }} icon="refresh" disabled={busy} onClick={() => run(() => api.review(project.id), "Reviewing the whole article…")}>Run article review</Button>
+            <Button size="sm" style={{ marginTop: 10 }} icon="refresh" disabled={busy || jobCount > 0} title={jobCount ? "Available once the segments in progress finish" : undefined}
+              onClick={() => run(() => api.review(project.id), "Reviewing the whole article…")}>Run article review</Button>
           </div>
 
           <div className="card">
@@ -495,7 +519,7 @@ export default function Studio({ project, setProject, navigate }) {
             setSelection(ex); setBubble(null);
           }}>Revise selection</Button>
           {["humanize", "polish", "expand"].map((t) => (
-            <Button key={t} size="sm" variant="ghost" onClick={() => { const ex = sourceExcerpt(bubble.text); setBubble(null); if (ex) applyTool(t, ex); }}>
+            <Button key={t} size="sm" variant="ghost" disabled={atLimit} title={limitHint} onClick={() => { const ex = sourceExcerpt(bubble.text); setBubble(null); if (ex) applyTool(t, ex); }}>
               {TOOLS.find((x) => x.key === t).label}
             </Button>
           ))}

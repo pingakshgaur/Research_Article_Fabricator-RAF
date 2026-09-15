@@ -71,6 +71,18 @@ class _Runtime:
         if notify:
             self.notify = notify
 
+    def ensure(self, agents: int, notify: Callable[[str], None] | None = None) -> None:
+        """Like configure(), but safe while other jobs hold slots: slots in use stay taken."""
+        with self.cond:
+            target = max(1, min(3, agents))
+            if target != self.capacity:
+                in_use = set(range(1, self.capacity + 1)) - set(self.free_slots)
+                self.capacity = target
+                self.free_slots = [s for s in range(1, target + 1) if s not in in_use]
+                self.cond.notify_all()
+        if notify:
+            self.notify = notify
+
     def acquire(self) -> int:
         with self.cond:
             while not self.free_slots:

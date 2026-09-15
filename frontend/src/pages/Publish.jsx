@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api.js";
 import { Button, Icon, Spinner, useToast } from "../ui.jsx";
+import TemplatePreview from "../TemplatePreview.jsx";
 
 /** Miniature page illustrating each template's structure. */
 function TemplateThumb({ t, accent, fill }) {
@@ -55,16 +56,7 @@ export default function Publish({ project, setProject, navigate }) {
     try { setProject(await api.setPublishStyle(project.id, next)); } catch (err) { toast(err.message, "error"); }
   };
 
-  const preview = async () => {
-    setWorking("preview");
-    try {
-      await api.previewPdf(project.id, style);
-    } catch (err) {
-      toast(err.message, "error");
-    } finally {
-      setWorking("");
-    }
-  };
+  const [previewing, setPreviewing] = useState(null);   // template key shown in the floating preview
 
   const download = async (fmt, draft = false) => {
     setWorking(fmt + (draft ? "-draft" : ""));
@@ -111,18 +103,27 @@ export default function Publish({ project, setProject, navigate }) {
             <div className="eyebrow" style={{ marginBottom: 6 }}>Step 1 · Template</div>
             <div className="h2" style={{ fontSize: 22 }}>Choose a layout</div>
           </div>
-          <Button icon="file" disabled={!!working} onClick={preview}>{working === "preview" ? <><Spinner /> Rendering…</> : "Preview PDF"}</Button>
+          <Button icon="eye" disabled={!catalogue} onClick={() => setPreviewing(style.template)}>Preview layout</Button>
         </div>
         <div className="template-grid">
           {catalogue?.templates.map((t) => (
-            <button key={t.key} type="button" className={`template-card ${style.template === t.key ? "on" : ""}`} aria-pressed={style.template === t.key}
-              onClick={() => choose({ template: t.key })}>
-              <TemplateThumb t={t} accent={t.color ? `#${palette?.accent}` : "#111"} fill={t.color ? `#${palette?.fill}` : "#fff"} />
-              <b>{t.name}</b>
-              <span>{t.description}</span>
-            </button>
+            <div key={t.key} className="template-card-wrap">
+              <button type="button" className={`template-card ${style.template === t.key ? "on" : ""}`} aria-pressed={style.template === t.key}
+                onClick={() => choose({ template: t.key })}>
+                <TemplateThumb t={t} accent={t.color ? `#${palette?.accent}` : "#111"} fill={t.color ? `#${palette?.fill}` : "#fff"} />
+                <b>{t.name}</b>
+                <span>{t.description}</span>
+              </button>
+              <button type="button" className="template-peek" onClick={() => setPreviewing(t.key)} aria-label={`Preview ${t.name}`}>
+                <Icon name="eye" size={14} /> Preview
+              </button>
+            </div>
           ))}
         </div>
+        {previewing && catalogue && (
+          <TemplatePreview project={project} catalogue={catalogue} current={style}
+            initial={{ template: previewing, palette: style.palette }} onApply={choose} onClose={() => setPreviewing(null)} />
+        )}
         <div className="eyebrow" style={{ margin: "22px 0 10px" }}>Step 2 · Colour style</div>
         <div className="row wrap" style={{ gap: 10 }}>
           {catalogue?.palettes.map((p) => (
