@@ -2,21 +2,22 @@ import { useState } from "react";
 import { api } from "../api.js";
 import { Button, Combo, Segmented, Select, useToast } from "../ui.jsx";
 
-const DISCIPLINES = ["Management & Business", "Economics & Finance", "Computer Science & AI", "Engineering", "Medicine & Public Health",
+export const DISCIPLINES = ["Management & Business", "Economics & Finance", "Computer Science & AI", "Engineering", "Medicine & Public Health",
   "Psychology", "Education", "Sociology", "Environmental Science", "Biology & Life Sciences", "Law & Policy", "Humanities & History"];
-const TYPES = ["Empirical research article", "Systematic literature review", "Conceptual / theoretical paper", "Case study", "Mixed-methods study"];
+export const TYPES = ["Empirical research article", "Systematic literature review", "Conceptual / theoretical paper", "Case study", "Mixed-methods study"];
 
-export default function Setup({ project, navigate, setProject }) {
+export default function Setup({ project, navigate, setProject, defaults }) {
   const toast = useToast();
   const [form, setForm] = useState(() => ({
     title: project?.title || "",
     topic: project?.topic || "",
-    discipline: project?.discipline || "",
-    article_type: project?.article_type || TYPES[0],
-    citation_style: project?.citation_style || "APA",
-    target_words: project?.target_words || 6000,
-    authors: (project?.authors || []).join(", "),
-    affiliation: project?.affiliation || "",
+    // a new article starts from the defaults chosen in Settings → New articles
+    discipline: project ? project.discipline : defaults?.discipline || "",
+    article_type: project?.article_type || defaults?.article_type || TYPES[0],
+    citation_style: project?.citation_style || defaults?.citation_style || "APA",
+    target_words: project?.target_words || defaults?.target_words || 6000,
+    authors: (project ? project.authors : defaults?.authors || []).join(", "),
+    affiliation: project ? project.affiliation : defaults?.affiliation || "",
   }));
   const [saving, setSaving] = useState(false);
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e?.target ? e.target.value : e }));

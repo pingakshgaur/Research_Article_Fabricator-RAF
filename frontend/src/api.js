@@ -1,9 +1,17 @@
 const BASE = "/api";
 
+// When an admin passcode is set, changing settings needs the session token returned by unlocking (Settings → Admin lock).
+let adminToken = "";
+try { adminToken = sessionStorage.getItem("raf-admin") || ""; } catch { /* storage unavailable */ }
+const setAdminToken = (token) => {
+  adminToken = token || "";
+  try { adminToken ? sessionStorage.setItem("raf-admin", adminToken) : sessionStorage.removeItem("raf-admin"); } catch { /* ignore */ }
+};
+
 async function request(path, { method = "GET", body, form } = {}) {
   const res = await fetch(BASE + path, {
     method,
-    headers: body ? { "Content-Type": "application/json" } : undefined,
+    headers: { ...(body ? { "Content-Type": "application/json" } : {}), ...(adminToken ? { "X-RAF-Admin": adminToken } : {}) },
     body: form || (body ? JSON.stringify(body) : undefined),
   });
   if (!res.ok) {
@@ -24,6 +32,29 @@ const files = (list, field = "files") => {
   return form;
 };
 
+/** Hand a Blob to the browser as a download. */
+export function saveBlob(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = Object.assign(document.createElement("a"), { href: url, download: name });
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
+/** Fetch a file route and save it under the name the server gives it. */
+async function saveFrom(path, query = "", fallback = "download") {
+  const res = await request(path + query);
+  const cd = res.headers.get("content-disposition") || "";
+  const name = (cd.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/) || [])[1] || fallback;
+  saveBlob(await res.blob(), decodeURIComponent(name));
+}
+
+const qs = (params) => {
+  const s = new URLSearchParams(params).toString();
+  return s ? "?" + s : "";
+};
+
 export const api = {
   health: () => request("/health"),
   catalogue: () => request("/segments"),
@@ -39,7 +70,7 @@ export const api = {
   removeData: (id, name) => request(`/projects/${id}/datasets/${encodeURIComponent(name)}`, { method: "DELETE" }),
   tones: () => request("/tones"),
   setTone: (id, tone) => request(`/projects/${id}/tone`, { method: "PUT", body: tone }),
-  lengthProfile: (type, words) => request(`/length-profile?article_type=${encodeURIComponent(type)}&target_words=${words}`),
+  lengthProfile: (type, words) => request("/length-profile" + qs({ article_type: type, target_words: words })),
   publishStyles: () => request("/publish/styles"),
   setPublishStyle: (id, style) => request(`/projects/${id}/publish-style`, { method: "PUT", body: style }),
   review: (id) => request(`/projects/${id}/review`, { method: "POST" }),
@@ -47,29 +78,72 @@ export const api = {
   saveLlmSettings: (patch) => request("/settings/llm", { method: "PUT", body: patch }),
   resetLlmSettings: () => request("/settings/llm", { method: "DELETE" }),
   benchmark: () => request("/settings/llm/benchmark", { method: "POST" }),
+
+  // ---- RAF settings and the admin lock
+  appSettings: () => request("/settings/app"),
+  saveAppSettings: (patch) => request("/settings/app", { method: "PUT", body: patch }),
+  resetAppSettings: () => request("/settings/app", { method: "DELETE" }),
+  unlock: (passcode) => request("/settings/admin/unlock", { method: "POST", body: { passcode } }).then((r) => setAdminToken(r.token)),
+  lock: () => request("/settings/admin/lock", { method: "POST" }).then(() => setAdminToken("")),
+  setPasscode: (passcode) => request("/settings/admin/passcode", { method: "PUT", body: { passcode } }).then((r) => setAdminToken(r.token)),
+
   setLengths: (id, lengths) => request(`/projects/${id}/lengths`, { method: "PUT", body: { lengths } }),
   generate: (id, data) => request(`/projects/${id}/generate`, { method: "POST", body: data }),
   revise: (id, key, instruction, selection = "") => request(`/projects/${id}/segments/${key}/revise`, { method: "POST", body: { instruction, selection } }),
   tool: (id, key, tool, selection = "") => request(`/projects/${id}/segments/${key}/tool`, { method: "POST", body: { tool, selection } }),
   regenerate: (id, key) => request(`/projects/${id}/segments/${key}/regenerate`, { method: "POST" }),
   edit: (id, key, content) => request(`/projects/${id}/segments/${key}`, { method: "PUT", body: { content } }),
-  approve: (id, key, approved) => request(`/projects/${id}/segments/${key}/approve?approved=${approved}`, { method: "POST" }),
+  approve: (id, key, approved) => request(`/projects/${id}/segments/${key}/approve` + qs({ approved }), { method: "POST" }),
   restore: (id, key, index) => request(`/projects/${id}/segments/${key}/restore/${index}`, { method: "POST" }),
   importDoc: (id, file) => request(`/projects/${id}/import`, { method: "POST", form: files([file], "file") }),
   fileUrl: (id, path) => `${BASE}/projects/${id}/files/${path}`,
-  async download(id, fmt, draft = false, style = null) {
-    const params = new URLSearchParams({ ...(draft ? { draft: "true" } : {}), ...(style || {}) });
-    const res = await request(`/projects/${id}/export/${fmt}${params.toString() ? `?${params}` : ""}`);
-    const blob = await res.blob();
-    const cd = res.headers.get("content-disposition") || "";
-    const name = (cd.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/) || [])[1] || `article.${fmt}`;
-    const url = URL.createObjectURL(blob);
-    const a = Object.assign(document.createElement("a"), { href: url, download: decodeURIComponent(name) });
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 4000);
-  },
+  download: (id, fmt, draft = false, style = null) =>
+    saveFrom(`/projects/${id}/export/${fmt}`, qs({ ...(draft ? { draft: "true" } : {}), ...(style || {}) }), `article.${fmt}`),
+
+  // ---- article structure
+  gallery: () => request("/structure/gallery"),
+  renameSegment: (id, key, title) => request(`/projects/${id}/structure/titles/${key}`, { method: "PUT", body: { title } }),
+  addSegment: (id, body) => request(`/projects/${id}/structure/segments`, { method: "POST", body }),
+  editSegment: (id, key, patch) => request(`/projects/${id}/structure/segments/${key}`, { method: "PATCH", body: patch }),
+  deleteSegment: (id, key) => request(`/projects/${id}/structure/segments/${key}`, { method: "DELETE" }),
+  setOrder: (id, order) => request(`/projects/${id}/structure/order`, { method: "PUT", body: { order } }),
+  setIncluded: (id, key, included) => request(`/projects/${id}/structure/included/${key}` + qs({ included }), { method: "PUT" }),
+  proposeParts: (id, title, purpose) => request(`/projects/${id}/structure/propose`, { method: "POST", body: { title, purpose } }),
+  writeSegment: (id, key) => request(`/projects/${id}/segments/${key}/write`, { method: "POST" }),
+
+  // ---- format an existing article
+  formatUpload: (file) => request("/format", { method: "POST", form: files([file], "file") }),
+  formatChecks: (id) => request(`/projects/${id}/format/checks`),
+  restyleReferences: (id, style) => request(`/projects/${id}/format/restyle`, { method: "POST", body: { style } }),
+
+  // ---- library
+  rename: (id, title) => request(`/projects/${id}/rename`, { method: "POST", body: { title } }),
+  duplicate: (id) => request(`/projects/${id}/duplicate`, { method: "POST" }),
+  archive: (id, archived) => request(`/projects/${id}/archive` + qs({ archived }), { method: "POST" }),
+  backup: (id) => saveFrom(`/projects/${id}/backup`, "", "project.raf.zip"),
+  restoreBackup: (file) => request("/projects/restore", { method: "POST", form: files([file], "file") }),
+
+  // ---- history
+  history: (id) => request(`/projects/${id}/history`),
+  aiStatement: (id) => request(`/projects/${id}/ai-statement`),
+
+  // ---- revisions
+  revisions: (id) => request(`/projects/${id}/revisions`),
+  saveRevision: (id, name, note = "") => request(`/projects/${id}/revisions`, { method: "POST", body: { name, note } }),
+  renameRevision: (id, n, name) => request(`/projects/${id}/revisions/${n}`, { method: "PATCH", body: { name } }),
+  deleteRevision: (id, n) => request(`/projects/${id}/revisions/${n}`, { method: "DELETE" }),
+  restoreRevision: (id, n, key = "") => request(`/projects/${id}/revisions/${n}/restore` + qs(key ? { key } : {}), { method: "POST" }),
+  compare: (id, a, b) => request(`/projects/${id}/compare` + qs({ a, b })),
+  exportChanges: (id, fmt, a, b) => saveFrom(`/projects/${id}/compare/export/${fmt}`, qs({ a, b }), `changes.${fmt}`),
+
+  // ---- revision rounds
+  rounds: (id) => request(`/projects/${id}/rounds`),
+  createRound: (id, comments, name = "") => request(`/projects/${id}/rounds`, { method: "POST", body: { comments, name } }),
+  updateRound: (id, rid, patch) => request(`/projects/${id}/rounds/${rid}`, { method: "PUT", body: patch }),
+  applyRound: (id, rid) => request(`/projects/${id}/rounds/${rid}/apply`, { method: "POST" }),
+  deleteRound: (id, rid) => request(`/projects/${id}/rounds/${rid}`, { method: "DELETE" }),
+  letterDocx: (id, rid) => saveFrom(`/projects/${id}/rounds/${rid}/letter.docx`, "", "response.docx"),
+
   events(id, onEvent) {
     const es = new EventSource(`${BASE}/projects/${id}/events`);
     es.onmessage = (e) => {

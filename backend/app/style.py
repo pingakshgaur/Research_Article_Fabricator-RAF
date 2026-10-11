@@ -146,7 +146,7 @@ def field_profile(index_dir: Path) -> dict:
         except json.JSONDecodeError:
             pass
     samples = []
-    for f in sorted(index_dir.glob("ref_*.txt"))[:20]:
+    for f in (sorted(index_dir.glob("ref_*.txt")) + sorted(index_dir.glob("web_*.txt")))[:20]:      # references, then online papers read in full
         paras = [p for p in re.split(r"\n\s*\n", f.read_text(encoding="utf-8")) if 60 <= len(p.split()) <= 300]
         samples.extend(paras[len(paras) // 4: len(paras) // 4 + 6])
     if len(samples) < 5:
@@ -287,7 +287,7 @@ def rewrite_paragraph(paragraph: str, *, title: str, section: str, tone_rule: st
 
 
 def humanize_text(text: str, *, title: str, section: str, tone_rule: str, profile: dict, deep: bool = True,
-                  only_below: int | None = None, progress=None) -> tuple[str, dict]:
+                  only_below: int | None = None, progress=None, on_edit=None) -> tuple[str, dict]:
     """Rewrite paragraph by paragraph. `only_below` limits the pass to paragraphs scoring under that value."""
     blocks = re.split(r"(\n\s*\n)", text)
     targets = []
@@ -311,6 +311,8 @@ def humanize_text(text: str, *, title: str, section: str, tone_rule: str, profil
     with ThreadPoolExecutor(max_workers=max(1, llm.runtime.capacity)) as pool:
         for i, (new, rep) in pool.map(work, targets):
             if rep["accepted"]:
+                if on_edit:
+                    on_edit(blocks[i].strip(), new)
                 blocks[i] = new
                 report["rewritten"] += 1
             else:

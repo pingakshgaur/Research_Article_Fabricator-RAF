@@ -8,7 +8,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import citations, store
+from . import citations, store, structure
 from .blueprints import BLUEPRINTS
 from .models import Figure, Project, Table
 
@@ -136,25 +136,63 @@ class Article:
     keywords: str
     sections: list[Section]
     project_dir: Path
+    rich: bool = False                                   # paragraphs carry inline formatting marks (a formatted import)
+    cite_order: list[str] = field(default_factory=list)  # source labels (R1, W3 …) in the order of the reference list
 
 
-def assemble(p: Project, only_approved: bool = False) -> Article:
-    segs = {k: s for k, s in p.segments.items() if s.content and (s.status == "approved" or not only_approved)}
+# ---- inline formatting (only in projects made by "Format an existing article"; RAF's own prose is plain)
+#      **bold**  *italic*  ^superscript^  ~subscript~ ; a literal mark is written with a backslash: \*
+INLINE = re.compile(r"(\*\*[^*\n]+?\*\*|\*[^*\n]+?\*|\^[^^\s][^^\n]*?\^|~[^~\s][^~\n]*?~)")
+_ESCAPES = {"\\*": "\ue000", "\\^": "\ue001", "\\~": "\ue002"}
+_LITERAL = {"\ue000": "*", "\ue001": "^", "\ue002": "~"}
+
+
+def inline_runs(text: str, rich: bool = True) -> list[tuple[str, str]]:
+    """Split a paragraph into (text, style) runs; style is "", "b", "i", "sup" or "sub"."""
+    if not rich:
+        return [(text, "")]
+    for mark, held in _ESCAPES.items():
+        text = text.replace(mark, held)
+    runs = []
+    for part in INLINE.split(text):
+        if not part:
+            continue
+        style = ("b" if part.startswith("**") else "i" if part[0] == "*" else "sup" if part[0] == "^" else "sub") if INLINE.fullmatch(part) else ""
+        body = part[2:-2] if style == "b" else part[1:-1] if style else part
+        for held, char in _LITERAL.items():
+            body = body.replace(held, char)
+        runs.append((body, style))
+    return runs
+
+
+def plain(text: str, rich: bool = True) -> str:
+    return "".join(t for t, _ in inline_runs(text, rich))
+
+
+def assemble(p: Project, only_approved: bool = False, markers: bool = False) -> Article:
+    """The article ready for typesetting. `markers=True` leaves RAF's citation markers ([R3]) in the text, for exporters
+    that write real citation commands (LaTeX); otherwise they become "(Smith, 2021)" or "[4]" in the project's style."""
+    # the article in the author's order, without the segments they left out
+    segs = {k: p.segments[k] for k in structure.order(p, p.segments)
+            if p.segments[k].content and structure.included(p, k) and (p.segments[k].status == "approved" or not only_approved)}
     body_texts = [s.content for k, s in segs.items() if k != "references"]
     _, order = citations.reference_list(p, body_texts)
+    rich = p.mode == "format"
+    cite = (lambda t: t) if markers else (lambda t: citations.render_in_text(t, p, order))
 
     title_text = segs["title"].content.strip() if "title" in segs else p.title
     title, _, subtitle = title_text.partition(": ")
     abstract = citations.render_in_text(segs["abstract"].content, p, order) if "abstract" in segs else ""
+    abstract = abstract if rich else plain(abstract, False)
     keywords = segs["keywords"].content if "keywords" in segs else ""
 
     sections: list[Section] = []
     numbered = 0
-    for key in sorted(segs, key=lambda k: BLUEPRINTS[k].display_order):
-        if key in {"title", "abstract", "keywords"}:
+    for key in segs:
+        if key in structure.FRONT:
             continue
         seg = segs[key]
-        if key in {"references", "appendices"}:
+        if not structure.numbered(p, key):
             number = ""
         else:
             numbered += 1
@@ -182,14 +220,26 @@ def assemble(p: Project, only_approved: bool = False) -> Article:
             if key == "appendices" and re.match(r"^Appendix [A-Z]\.", raw):
                 sec.blocks.append(Block("subhead", text=raw))
                 continue
+            if rich and re.match(r"^#{2,4} \S", raw) and "\n" not in raw:      # a sub-heading kept from the imported document
+                sec.blocks.append(Block("subhead", text=plain(raw.lstrip("# "))))
+                continue
             for para in raw.split("\n") if key == "appendices" else [raw]:
-                text = citations.render_in_text(para.strip().lstrip("- "), p, order)
+                text = cite(para.strip().lstrip("- "))
                 if text:
                     sec.blocks.append(Block("p", text=text))
         sections.append(sec)
     return Article(title=title.strip(), subtitle=subtitle.strip(), authors=p.authors, affiliation=p.affiliation,
                    date=dt.date.today().strftime("%d %B %Y"), abstract=abstract, keywords=keywords, sections=sections,
-                   project_dir=store.project_dir(p.id))
+                   project_dir=store.project_dir(p.id), rich=rich, cite_order=order)
+
+
+def contents_entries(a: Article, tpl: Template | None = None) -> list[tuple[int, str]]:
+    """(level, text) of every heading, in document order — what a table of contents lists."""
+    out = []
+    for s in a.sections:
+        out.append((1, heading_text(tpl, s.number, s.heading) if tpl else f"{s.number + '. ' if s.number else ''}{s.heading}"))
+        out += [(2, b.text) for b in s.blocks if b.kind == "subhead"]
+    return out
 
 
 def table_label(t: Table) -> str:
@@ -434,13 +484,57 @@ def to_docx(a: Article, out: Path, template: str | None = None, palette: str | N
                 if tpl.abstract_style == "rules":
                     para_rule(kw, "bottom", pal["accent"], "8")
 
-    if tpl.toc:
+    # ---- contents
+    # The entries are written into the file as the TOC field's stored result, each linked to a bookmark on its heading,
+    # so the list is complete in every program (LibreOffice, Google Docs and previews never update fields). Word
+    # refreshes the field when the file is opened, which adds the page numbers.
+    toc = contents_entries(a, tpl) if tpl.toc else []
+    anchors = iter(f"_Toc{n:06d}" for n in range(1, len(toc) + 1))
+
+    def fld_char(par, kind: str):
+        el = OxmlElement("w:fldChar")
+        el.set(qn("w:fldCharType"), kind)
+        par.add_run()._r.append(el)
+
+    def bookmark(par):
+        name = next(anchors, None)
+        if name is None or not par.runs:
+            return
+        start, end = OxmlElement("w:bookmarkStart"), OxmlElement("w:bookmarkEnd")
+        start.set(qn("w:id"), str(int(name[4:])))
+        start.set(qn("w:name"), name)
+        end.set(qn("w:id"), str(int(name[4:])))
+        par.runs[0]._r.addprevious(start)
+        par._p.append(end)
+
+    if toc:
         toc_title = d.add_paragraph()
         run(toc_title, "Contents", size=tpl.body_pt + 1.5, bold=True, color=accent, font=title_font)
-        field(d.add_paragraph(), 'TOC \\o "1-2" \\h \\z \\u')
-        note = d.add_paragraph()
-        run(note, "(Right-click → Update Field to refresh the table of contents.)", size=8, italic=True, color=muted)
+        for n, (level, text) in enumerate(toc, 1):
+            entry = d.add_paragraph()
+            entry.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            entry.paragraph_format.space_after = Pt(2)
+            entry.paragraph_format.line_spacing = 1.2
+            entry.paragraph_format.left_indent = Cm(0.6 if level == 2 else 0)
+            entry.paragraph_format.first_line_indent = Cm(0)
+            if n == 1:
+                fld_char(entry, "begin")
+                instr = OxmlElement("w:instrText")
+                instr.set(qn("xml:space"), "preserve")
+                instr.text = ' TOC \\o "1-2" \\h \\z \\u '
+                entry.add_run()._r.append(instr)
+                fld_char(entry, "separate")
+            link = OxmlElement("w:hyperlink")
+            link.set(qn("w:anchor"), f"_Toc{n:06d}")
+            link.set(qn("w:history"), "1")
+            link.append(run(entry, text, size=tpl.body_pt - (1 if level == 2 else 0))._r)
+            entry._p.append(link)
+            if n == len(toc):
+                fld_char(entry, "end")
         d.add_paragraph().add_run().add_break(WD_BREAK.PAGE)
+        update = OxmlElement("w:updateFields")
+        update.set(qn("w:val"), "true")
+        d.settings.element.append(update)
 
     if tpl.columns == 2:
         body_section = d.add_section(WD_SECTION.CONTINUOUS)
@@ -450,17 +544,24 @@ def to_docx(a: Article, out: Path, template: str | None = None, palette: str | N
     for s in a.sections:
         if s.key == "appendices" and tpl.columns == 1:
             d.add_paragraph().add_run().add_break(WD_BREAK.PAGE)
-        d.add_heading(heading_text(tpl, s.number, s.heading), level=1)
+        bookmark(d.add_heading(heading_text(tpl, s.number, s.heading), level=1))
         first = True
         for b in s.blocks:
             if b.kind == "p":
-                para = d.add_paragraph(b.text)
+                para = d.add_paragraph("" if a.rich else b.text)
+                for text, mark in inline_runs(b.text, a.rich) if a.rich else []:
+                    r = para.add_run(text)
+                    r.bold, r.italic = mark == "b" or None, mark == "i" or None
+                    if mark == "sup":           # the two share one setting in Word, so only the wanted one is touched
+                        r.font.superscript = True
+                    elif mark == "sub":
+                        r.font.subscript = True
                 para.alignment = body_align
                 if tpl.indent_cm and not (first and tpl.key == "classic_journal"):
                     para.paragraph_format.first_line_indent = Cm(tpl.indent_cm)
                 first = False
             elif b.kind == "subhead":
-                d.add_heading(b.text, level=2)
+                bookmark(d.add_heading(b.text, level=2))
             elif b.kind == "ref":
                 para = d.add_paragraph(b.text)
                 para.paragraph_format.left_indent = Cm(1.27 if tpl.cover == "title_page" else 1.0)
@@ -533,24 +634,13 @@ def to_docx(a: Article, out: Path, template: str | None = None, palette: str | N
 
 
 # ====================================================================== PDF
-def to_pdf(a: Article, out: Path, template: str | None = None, palette: str | None = None) -> Path:
-    from xml.sax.saxutils import escape
-
+def pdf_fonts() -> dict[str, tuple[str, str, str]]:
+    """Register the Unicode fonts shipped with Matplotlib for ReportLab; (regular, bold, italic) per family."""
     import matplotlib
-    from reportlab.lib import colors
-    from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_LEFT
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import ParagraphStyle
-    from reportlab.lib.units import cm
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
-    from reportlab.platypus import (BaseDocTemplate, Frame, FrameBreak, HRFlowable, Image, KeepTogether, NextPageTemplate, PageBreak,
-                                    PageTemplate, Paragraph, Spacer, Table as RLTable, TableStyle)
-    from reportlab.platypus.tableofcontents import TableOfContents
 
-    tpl, pal = resolve_style(template, palette)
     font_dir = Path(matplotlib.get_data_path()) / "fonts" / "ttf"
-    fonts = {"serif": ("Times-Roman", "Times-Bold", "Times-Italic"), "sans": ("Helvetica", "Helvetica-Bold", "Helvetica-Oblique")}
     try:
         for name, file in (("RafSerif", "DejaVuSerif.ttf"), ("RafSerif-Bold", "DejaVuSerif-Bold.ttf"), ("RafSerif-Italic", "DejaVuSerif-Italic.ttf"),
                            ("RafSerif-BoldItalic", "DejaVuSerif-BoldItalic.ttf"),
@@ -559,9 +649,25 @@ def to_pdf(a: Article, out: Path, template: str | None = None, palette: str | No
             pdfmetrics.registerFont(TTFont(name, str(font_dir / file)))
         pdfmetrics.registerFontFamily("RafSerif", normal="RafSerif", bold="RafSerif-Bold", italic="RafSerif-Italic", boldItalic="RafSerif-BoldItalic")
         pdfmetrics.registerFontFamily("RafSans", normal="RafSans", bold="RafSans-Bold", italic="RafSans-Oblique", boldItalic="RafSans-BoldOblique")
-        fonts = {"serif": ("RafSerif", "RafSerif-Bold", "RafSerif-Italic"), "sans": ("RafSans", "RafSans-Bold", "RafSans-Oblique")}
+        return {"serif": ("RafSerif", "RafSerif-Bold", "RafSerif-Italic"), "sans": ("RafSans", "RafSans-Bold", "RafSans-Oblique")}
     except Exception:  # noqa: BLE001 - fall back to core fonts
-        pass
+        return {"serif": ("Times-Roman", "Times-Bold", "Times-Italic"), "sans": ("Helvetica", "Helvetica-Bold", "Helvetica-Oblique")}
+
+
+def to_pdf(a: Article, out: Path, template: str | None = None, palette: str | None = None) -> Path:
+    from xml.sax.saxutils import escape
+
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_LEFT
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.units import cm
+    from reportlab.platypus import (BaseDocTemplate, Frame, FrameBreak, HRFlowable, Image, KeepTogether, NextPageTemplate, PageBreak,
+                                    PageTemplate, Paragraph, Spacer, Table as RLTable, TableStyle)
+    from reportlab.platypus.tableofcontents import TableOfContents
+
+    tpl, pal = resolve_style(template, palette)
+    fonts = pdf_fonts()
     body_f = fonts["serif" if tpl.body_serif else "sans"]
     head_f = fonts["serif" if tpl.heading_serif else "sans"]
     accent = colors.HexColor("#" + pal["accent"])
@@ -735,7 +841,8 @@ def to_pdf(a: Article, out: Path, template: str | None = None, palette: str | No
                 style = S["body"]
                 if first and tpl.key == "classic_journal":
                     style = ParagraphStyle("body0", parent=S["body"], firstLineIndent=0)
-                story.append(Paragraph(escape(b.text), style))
+                marks = {"b": "<b>%s</b>", "i": "<i>%s</i>", "sup": "<super>%s</super>", "sub": "<sub>%s</sub>", "": "%s"}
+                story.append(Paragraph("".join(marks[m] % escape(t) for t, m in inline_runs(b.text, a.rich)), style))
                 first = False
             elif b.kind == "subhead":
                 story.append(para(b.text, "h2"))
@@ -795,11 +902,17 @@ def to_markdown(a: Article) -> str:
         lines += ["## Abstract", a.abstract, ""]
     if a.keywords:
         lines += [f"**Keywords:** {a.keywords}", ""]
+    toc = contents_entries(a)
+    if toc:
+        # Anchors follow the heading-slug rule used by GitHub, VS Code, Obsidian and Pandoc's gfm reader.
+        slug = lambda text: re.sub(r"[^\w\- ]", "", text.lower()).replace(" ", "-")  # noqa: E731
+        lines += ["## Contents", *[f"{'  ' * (level - 1)}- [{text}](#{slug(text)})" for level, text in toc], ""]
     for s in a.sections:
         lines.append(f"## {s.number + '. ' if s.number else ''}{s.heading}\n")
         for b in s.blocks:
-            if b.kind == "p":
-                lines.append(b.text + "\n")
+            if b.kind == "p":      # bold and italic marks are already Markdown; superscript and subscript are not
+                lines.append(("".join({"sup": "<sup>%s</sup>", "sub": "<sub>%s</sub>", "b": "**%s**", "i": "*%s*", "": "%s"}[m] % t
+                                      for t, m in inline_runs(b.text, True)) if a.rich else b.text) + "\n")
             elif b.kind == "subhead":
                 lines.append(f"### {b.text}\n")
             elif b.kind == "ref":
@@ -833,7 +946,8 @@ def import_document(p: Project, path: Path) -> dict[str, str]:
 
     doc = read_any(path)
     text = doc.text
-    titles = {BLUEPRINTS[k].title.lower(): k for k in p.segments}
+    # a heading may carry the author's title for a segment or, for a built-in one, its usual title
+    titles = {**{BLUEPRINTS[k].title.lower(): k for k in p.segments if k in BLUEPRINTS}, **{s.title.lower(): k for k, s in p.segments.items()}}
     aliases = {"literature review": "literature_review", "results": "results", "analysis": "results", "conclusion": "conclusion",
                "conclusions": "conclusion", "limitations": "limitations", "future research": "limitations", "bibliography": "references"}
     choices = {**titles, **{k: v for k, v in aliases.items() if v in p.segments}}
@@ -844,6 +958,9 @@ def import_document(p: Project, path: Path) -> dict[str, str]:
         clean = re.sub(r"^(\d+(\.\d+)*|[IVXLC]+)\.?\s+", "", re.sub(r"^#+\s*", "", line.strip())).lower()
         if not clean or len(clean) > 60:
             continue
+        if clean in {"contents", "table of contents"}:
+            marks.append((i, ""))      # ends the previous section; the list itself belongs to no segment
+            continue
         match = process.extractOne(clean, list(choices), scorer=fuzz.ratio)
         if match and match[1] >= 88:
             marks.append((i, choices[match[0]]))
@@ -852,6 +969,7 @@ def import_document(p: Project, path: Path) -> dict[str, str]:
         end = marks[n + 1][0] if n + 1 < len(marks) else len(lines)
         body = "\n".join(lines[start + 1 : end]).strip()
         body = re.sub(r"\n{3,}", "\n\n", body)
-        if body and key not in out:
+        # A heading can occur twice — once as a line of the contents list, once above its section. The section is the longer one.
+        if key and len(body) > len(out.get(key, "")):
             out[key] = body
     return out

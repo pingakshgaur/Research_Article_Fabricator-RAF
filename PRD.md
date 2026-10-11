@@ -2,8 +2,8 @@
 
 ## RAF — Research Article Fabricator
 
-**Version:** 1.4.0  
-**Last Updated:** September 2026  
+**Version:** 1.7.0  
+**Last Updated:** October 2026  
 **Status:** Active Development
 
 ---
@@ -505,7 +505,7 @@ Four sequential layers before any drafted segment reaches the Studio:
 | Format | Engine | Features |
 |--------|--------|----------|
 | **PDF** | ReportLab with TrueType fonts (DejaVu) | Cover page, running headers, page numbers, multi-column support, embedded figures |
-| **DOCX** | python-docx with XML-level styling | Native Word heading styles, editable tables, borders, TOC fields |
+| **DOCX** | python-docx with XML-level styling | Native Word heading styles, editable tables, borders, a contents list written into the file and linked to each heading (Word adds page numbers on open) |
 | **Markdown** | GitHub-flavoured with base64-embedded figures | Portable, version-control friendly |
 
 **Template Preview System:**
@@ -539,6 +539,45 @@ A slide-over drawer panel accessible from the app header providing:
 
 ---
 
+### 7.14b Settings, Themes & Admin Lock (1.5)
+
+The Developer Tools drawer became one tab of a full **Settings** page (gear button, `#/raf/settings`).
+
+| Capability | Description |
+|------------|-------------|
+| **Themes** | Five interface themes — Violet & Lime (original), Rosewood, Aurora, Solar, Ember — each a ten-colour ramp with a dark and a light version. The four new ones are generated from seven named colours per theme through shared `color-mix()` formulas; every text/background pair meets WCAG AA (≥ 4.5 : 1) |
+| **Appearance options** | Theme (saved server-side), dark / light (per browser), background effects on/off, optional workspace name |
+| **Defaults for new articles** | Authors, affiliation, discipline, article type, citation style, target length, run options and tone; applied when a project is created |
+| **Language model** | The former Developer Tools controls, unchanged |
+| **Admin lock** | Optional passcode (PBKDF2-SHA256, salted). While set, settings are readable but every change needs a session token (12 h, in memory) obtained by unlocking; 5 wrong attempts → 30 s wait. Protects against casual changes on a shared computer, not against file access |
+| **Storage** | `<data_dir>/app_settings.json` |
+
+### 7.14c Article Structure, Custom Theme & Sidebar (1.6)
+
+| Capability | Description |
+|------------|-------------|
+| **Per-project structure** | `structure.py` replaces every direct use of the global blueprint table: `blueprint_for`, `order`, `generation_order`, `deps`, `describe`. Project fields `titles`, `custom_segments`, `order`, `excluded` (schema version 3) |
+| **Rename** | Any body segment; used in Studio, exports, Contents and the importer |
+| **Custom segments** | Written by RAF from a stated purpose (default three parts, or parts proposed by the model) or written by the author; gallery of ten common ones; up to 12 per project |
+| **Order / leave out** | Drag or step the body into any order; exclude a segment from the document without deleting it; front matter fixed |
+| **Write later** | Any segment without text can be written on its own as a background job |
+| **References follow** | Rebuilt from the citations of included segments on every relevant change and at export; a hand-edited list is left alone |
+| **Custom theme** | One picked colour → accent for both modes, text colour on it, contrasting highlight (opposite hue) and a ten-colour ramp (`customTheme.js`); verified at WCAG AA over 2,386 colours |
+| **Sidebar** | Captions and group titles removed, bold rules between groups, Library first; width set by dragging (64–420 px, compact below 132 px), per browser |
+
+### 7.14d LaTeX Export & Format an Existing Article (1.7)
+
+| Capability | Description |
+|------------|-------------|
+| **LaTeX export** | `.zip` with `main.tex`, `references.bib`, `figures/`, `README.txt`. Templates map to `article` (three variants), `apa7` and `IEEEtran`. Citation markers become `\parencite{key}`; `biblatex` style follows the project's citation style. Tables use `booktabs` + `tabularx`, split into continued floats above 30 rows. Not compiled by RAF |
+| **BibTeX / RIS** | Reference list alone; stable unique keys (`smith2021digital`); optional Crossref completion (volume, issue, pages) |
+| **Format mode** | `Project.mode = "format"` (schema version 4). A document is read (`formatter.py`), its outline detected, and every section stored as an author-owned segment, pre-approved |
+| **Readers** | DOCX (styles, inline formatting, tables, images, captions), Markdown, plain text (heading heuristics), PDF (font-size heuristics; lossy) |
+| **Inline formatting** | `**bold**`, `*italic*`, `^sup^`, `~sub~` stored in segment text of format-mode projects only; rendered by all four exporters and the Studio; literal marks escaped with a backslash |
+| **Checks** | Deterministic citation-versus-reference-list comparison (author–date and numbered) and per-section style metrics |
+| **Reference restyle (experimental)** | Crossref lookup per entry (DOI, or bibliographic search with a title-match threshold); identified entries re-formatted in APA / Harvard / Chicago; others untouched |
+| **Spacing fix** | Punctuation clean-up no longer removes the space in statistics such as "p = .05" (affected exports and stored drafts in earlier versions) |
+
 ### 7.15 Reliability & Fault Tolerance
 
 | Feature | Description |
@@ -549,6 +588,23 @@ A slide-over drawer panel accessible from the app header providing:
 | **Self-Calibrating Estimates** | Speed probe at run start; actuals stored in `timing_history.json`; median ratio corrects future estimates |
 | **Startup Recovery** | On server restart, interrupted runs are detected and marked "stopped" — ready to resume |
 | **Atomic Persistence** | Write to .tmp file → atomic replace to prevent corruption during concurrent operations |
+
+---
+
+### 7.16 Library, History & Revisions (1.5)
+
+| Capability | Description |
+|------------|-------------|
+| **Library page** | All projects with search, stage filter and sorting; rename, duplicate, archive, delete; per-project backup to one `.zip` and restore (never overwrites an existing project) |
+| **Project History** | Append-only `history.jsonl` per project: every creation, upload, setting change, run, draft, revision, tool, manual edit, approval, restore, import, export and revision event, with actor (`you` / `RAF`). Filterable timeline, CSV / Markdown export. Rebuilt from saved versions for pre-1.5 projects |
+| **AI-use statement** | Disclosure paragraph drafted deterministically from recorded facts (no model call) |
+| **Article Revisions** | Named whole-article snapshots (`revisions/r0001.json` + figures). Automatic at publish and before a run, import, restore or round (identical states are not saved twice; 30 automatic ones kept) |
+| **Compare** | Word-level diff per segment between any two revisions or the current article; totals of words added and removed |
+| **Restore** | Whole revision or one segment; the current state is snapshotted first |
+| **Changes-highlighted export** | DOCX or PDF with insertions green/underlined and deletions red/struck, citations rendered as published |
+| **Revision rounds** | Reviewer comments → points (model, with a rule-based fallback) → author accepts / edits / skips → one revision per affected segment through the normal engine → before/after revisions → editable point-by-point response letter (Markdown, DOCX) |
+| **Schema versioning** | `schema_version` in `project.json`, upgraded on load |
+| **Automated tests** | `backend/tests` (pytest) with a stand-in model; no Ollama or network needed |
 
 ---
 
@@ -813,6 +869,23 @@ backend/data/projects/<project-id>/
 | `POST` | `/api/projects/{pid}/import` | Re-import an externally edited document |
 | `GET` | `/api/projects/{pid}/files/{path}` | Serve project assets (e.g., generated figures) |
 
+### Library, History & Revisions (1.5)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | `/api/projects/{id}/rename` · `/duplicate` · `/archive` | Library actions |
+| GET | `/api/projects/{id}/backup` | Download the project as a `.zip` |
+| POST | `/api/projects/restore` | Create a project from a backup |
+| GET | `/api/projects/{id}/history` · `/ai-statement` | Event log; disclosure paragraph and its facts |
+| GET, POST | `/api/projects/{id}/revisions` | List; save a revision |
+| PATCH, DELETE | `/api/projects/{id}/revisions/{n}` | Rename; delete |
+| POST | `/api/projects/{id}/revisions/{n}/restore?key=` | Restore the whole revision or one segment |
+| GET | `/api/projects/{id}/compare?a=&b=` · `/compare/export/{docx\|pdf}` | Differences; changes-highlighted file |
+| GET, POST | `/api/projects/{id}/rounds` | List; start a revision round from pasted comments |
+| GET, PUT, DELETE | `/api/projects/{id}/rounds/{rid}` | Read; edit points or letter; discard |
+| POST | `/api/projects/{id}/rounds/{rid}/apply` | Apply the accepted points |
+| GET | `/api/projects/{id}/rounds/{rid}/letter.docx` | Response letter as Word |
+
 ### Developer Tools
 
 | Method | Path | Description |
@@ -836,7 +909,7 @@ backend/data/projects/<project-id>/
 | `RAF_LLM_TIMEOUT` | `900` | Seconds per model response |
 | `RAF_OLLAMA_WAIT` | `600` | Seconds to wait for Ollama recovery after crash |
 | `RAF_MIN_REFS` / `RAF_MAX_REFS` | `10` / `20` | Reference count limits |
-| `RAF_WEB_RESEARCH` | `True` | Enable online scholarly research |
+| `RAF_WEB_RESEARCH` | `True` | Default state of the Online research switch for new projects |
 | `RAF_RESULTS_PER_SOURCE` | `5` | Results fetched per scholarly API |
 | `RAF_HTTP_TIMEOUT` | `25` | Timeout for research HTTP requests |
 | `RAF_MAX_NGRAM_OVERLAP` | `0.04` | Originality: max 7-word shingle overlap (4%) |
@@ -918,6 +991,14 @@ backend/data/projects/<project-id>/
 | `citations.py` | 145 | APA/Harvard/Chicago/IEEE formatting |
 | `jobs.py` | 132 | Background job runner, SSE event broadcasting |
 | `llm_settings.py` | — | Developer Tools settings, presets, benchmark |
+| `api/` | — | Route modules: projects, library, fabrication, studio, publishing, record, settings (split out of `main.py` in 1.5) |
+| `history.py` | — | Append-only project history, AI-use statement |
+| `revisions.py` | — | Whole-article revisions: snapshot, compare, restore, changes export |
+| `rounds.py` | — | Revision rounds and the response letter |
+| `app_settings.py` | — | RAF settings: theme, new-article defaults, admin lock |
+| `structure.py` | — | One article's structure: titles, added segments, order, exclusions |
+| `latex.py` | — | LaTeX export |
+| `formatter.py` | — | Format an existing article: readers, outline, checks, restyle |
 | `checkpoints.py` | 85 | Durable progress markers, resume from checkpoint |
 | `store.py` | 71 | Atomic file-system JSON persistence |
 | `config.py` | 66 | Environment variable configuration |

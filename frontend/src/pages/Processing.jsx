@@ -11,7 +11,6 @@ const STAGES = [
   { key: "writing", title: "Writing segments", sub: "Moves · notes · drafts · review" },
   { key: "guard", title: "Originality & integrity", sub: "Overlap · paraphrase · numbers" },
 ];
-const LENGTHABLE = new Set(["abstract", "introduction", "literature_review", "methodology", "results", "discussion", "conclusion", "limitations"]);
 
 const fmtTime = (t) => new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
 
@@ -81,7 +80,7 @@ function LengthChip({ project, seg, setProject }) {
   const [editing, setEditing] = useState(false);
   const current = project.segment_lengths?.[seg.key] ?? seg.quality.target_words;
   const [value, setValue] = useState(current || "");
-  if (!LENGTHABLE.has(seg.key)) return <span className="mono muted" style={{ fontSize: 11 }}>{seg.status}</span>;
+  if (!project.structure.find((r) => r.key === seg.key)?.lengthable) return <span className="mono muted" style={{ fontSize: 11 }}>{seg.status}</span>;
   if (!editing)
     return (
       <button className="btn ghost sm" style={{ height: 22, padding: "0 6px", fontSize: 11 }} title="Change the length before this segment starts"
@@ -143,6 +142,7 @@ export default function Processing({ project, setProject, events, navigate }) {
       setProject(await api.generate(project.id, {
         segments: project.selected, web_research: o.web_research ?? true, data_analysis: o.data_analysis ?? true,
         depth: o.depth ?? "thorough", agents: o.agents ?? 1, resume: true,
+        hallucination_filter: o.hallucination_filter ?? true, style_pass: o.style_pass ?? true,
       }));
     } catch (err) {
       toast(err.message, "error");

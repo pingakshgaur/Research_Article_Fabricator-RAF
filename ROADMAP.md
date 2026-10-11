@@ -1,7 +1,7 @@
 # RAF Roadmap — versions 1.4.1 to 2.0
 
 This plan takes the sixteen requested features and improvements and places each one in a release. It was written
-against the code as it stands at **version 1.4.0**, so every item names the files it touches and the reason it sits
+against the code as it stood at **version 1.4.0**, so every item names the files it touches and the reason it sits
 where it does.
 
 Sizes are relative: **S** is a few focused changes, **M** is a new module or page, **L** changes how several modules
@@ -19,10 +19,10 @@ work together. No dates are given, because speed depends on how much time goes i
 
 | Version | Theme | What ships | Size |
 |---|---|---|---|
-| **1.4.1** | Fix-up | DOCX Contents fix, Resume fix, small corrections | S |
-| **1.5** | Project memory | Library page, Project History, Article Revisions | M + M + L |
-| **1.6** | Segment freedom | Rename segments, custom segments, add / remove / reorder segments later | S + L + M |
-| **1.7** | Publishing | LaTeX export, Format an existing article | M + L |
+| **1.4.1** ✅ released | Fix-up | DOCX Contents fix, Resume fix, small corrections | S |
+| **1.5** ✅ released | Project memory | Library page, Project History, Article Revisions; added on request: Settings page, four new themes, admin lock | M + M + L + M |
+| **1.6** ✅ released | Segment freedom | Rename segments, custom segments, add / remove / reorder segments later; added on request: Custom theme from one colour, resizable and tidied sidebar | S + L + M + M |
+| **1.7** ✅ released | Publishing | LaTeX export, Format an existing article | M + L |
 | **1.8** | Open research and the Window | Articles without reference files, live view of the writing | L + L |
 | **1.9** | Quality | Article level Q1–Q4, Humanize 2, Integrity Report image | M + L + M |
 | **2.0** | The suite | New Hub home page, TextAI Tools, Data Analyzer | S + L + L |
@@ -68,6 +68,8 @@ work together. No dates are given, because speed depends on how much time goes i
 
 ## Version 1.4.1 — Fix-up
 
+**Status: done.** Checked by `.scratch/v141_test.py` and by opening the generated files in Word.
+
 **Goal:** published files are correct, and resuming a run keeps your choices.
 
 ### DOCX Contents fix (request 6)
@@ -81,10 +83,13 @@ work together. No dates are given, because speed depends on how much time goes i
   1. Give every level-1 and level-2 heading a bookmark.
   2. Write the Contents entries into the file as real text, each one a link to its bookmark, inside the TOC field. The
      list is then visible in every program, even when nothing updates it.
-  3. Add a `PAGEREF` field per entry and switch on "update fields on open" in the document settings, so Word fills in
-     the page numbers itself.
+  3. Switch on "update fields on open" in the document settings, so Word rebuilds the list with page numbers when
+     the file is opened. (As built: the stored entries carry no page numbers of their own, because RAF cannot know
+     where Word will break pages, and a wrong number is worse than none.)
   4. Remove the "(Right-click → Update Field…)" note.
-  5. Add a linked Contents list to the Markdown export, which has none today.
+  5. Add a linked Contents list to the Markdown export, which had none.
+  6. Teach the importer that a heading can now appear twice (once in the Contents list, once above its section), so
+     re-importing a published file still recovers every section.
 * **Done when:** the same article opened in Word, LibreOffice and Google Docs shows every section and appendix
   heading under Contents, in the same order as the PDF.
 
@@ -98,10 +103,10 @@ started with, and the backend will fall back to the stored options when a resume
 
 * The "model is not installed" message in `main.py` names the model from the environment variable, not the one chosen
   in Developer Tools.
-* `RAF_WEB_RESEARCH` in `config.py` is read by nothing. Either wire it in as the default of the Online research switch
-  or delete it.
+* `RAF_WEB_RESEARCH` in `config.py` was read by nothing. It now sets whether the Online research switch starts on for
+  new projects.
 * `originality.destyle` replaces "Moreover," with "In addition," — which `style.py` then counts as a stock connector.
-  Remove the two rules that swap one stock connector for another.
+  Those connectors are now dropped instead of swapped.
 
 ### Sequence
 
@@ -111,6 +116,26 @@ started with, and the backend will fall back to the stored options when a resume
 ---
 
 ## Version 1.5 — Project memory
+
+**Status: done.** Covered by the automated tests in `backend/tests` and checked in the browser, including one revision
+round run with the real model.
+
+**Added to 1.5 on request (not in the original plan):** a **Settings** page behind a gear button, replacing the
+Developer Tools button. It holds the theme picker with four new themes (Rosewood, Aurora, Solar, Ember, each in dark
+and light), the defaults new articles start with, the language-model controls that used to be Developer Tools, and an
+optional **admin lock** (a passcode needed to change settings). Version 2.0's Hub will reuse this page for the whole
+suite.
+
+Built differently from the plan in four places:
+
+* The Library is kept fast by remembering each project's summary in memory until its file changes, not by a
+  `projects/index.json` file. Same effect, and no second file that could disagree with the first.
+* A copy made with **Duplicate** inherits the original's history and then continues its own.
+* In a revision round, all accepted points for one segment go to the model as a single revision, so two comments on
+  the same segment cannot undo each other. Segments are revised side by side, as many at once as the project's
+  agent setting allows.
+* The comments are still split into points when Ollama is not running (by paragraph and numbering), so a round can
+  be prepared offline. Applying it needs the model.
 
 **Goal:** RAF remembers what happened to an article, lets you find every project, and lets you go back to any earlier
 state of the whole article.
@@ -183,6 +208,39 @@ a supervisor or reviewer sends comments. Today RAF only keeps versions per segme
 
 ## Version 1.6 — Segment freedom
 
+**Status: done.** Covered by `backend/tests/test_structure.py` and checked in the browser (structure drawer, Studio,
+Publish, Segments and Fabrication pages).
+
+**Added to 1.6 on request (not in the original plan):**
+
+* **Custom theme.** A round colour button in Settings → Appearance opens a picker (system dialog, R / G / B sliders,
+  hex). From the one colour picked, RAF works out every shade, the text colour on buttons, and a contrasting colour,
+  for dark and light mode, with a live preview. A test runs the engine over 2,386 colours and checks every text pair.
+* **Resizable sidebar.** Drag its right edge (or use the arrow keys); double-click resets. Below 132 px it shows
+  numbers and icons only. Remembered per browser.
+* **Tidier sidebar.** The captions under each button, the group titles and the footer sentence are gone; bold rules
+  separate the groups; Library moved to the top. The whole sidebar now fits without scrolling. Captions remain as
+  hover tooltips.
+
+**Changes to the look made in this version** (as invited): only the sidebar, described above, and the new Structure
+drawer and colour picker, which follow the existing card and drawer style. No other page was restyled.
+
+**Built differently from the plan:**
+
+* Reordering works by dragging *and* by up / down buttons, so it is usable from the keyboard.
+* The reference list is rebuilt automatically, except when you edited it by hand; then it is yours until you press
+  Regenerate. Without this exception, every automatic rebuild would have thrown away hand corrections.
+* "Leave out" and "delete" are separate: built-in segments can only be left out, segments you added can also be
+  deleted.
+* A fabrication run never touches a segment you write yourself.
+
+**Not done in 1.6:**
+
+* The purpose and parts of an added segment cannot be edited in the interface after it is created (the API route
+  exists; for now, delete the segment and add it again).
+* Title, Abstract and Keywords cannot be renamed or moved: the templates typeset them as the title block.
+* Writing an added segment was tested with the stand-in model only, not with a real run.
+
 **Goal:** the article's structure belongs to the author. RAF's twelve segments become a starting point, not a limit.
 
 ### Groundwork: one structure, read from one place
@@ -246,6 +304,35 @@ segment stay the same; only the name changes.
 ---
 
 ## Version 1.7 — Publishing
+
+**Status: done.** Covered by `backend/tests/test_latex_format.py` and checked in the browser.
+
+**Fixed along the way:**
+
+* The Custom-theme colour picker opened underneath the cards of the Settings page. It is now drawn above everything.
+* RAF's punctuation clean-up removed the space in statistics, turning "p = .05" into "p =.05" in exports and in stored
+  drafts. A space before punctuation is now only removed when no digit follows. Text already stored that way is not
+  corrected automatically.
+* Superscript was lost in Word exports of formatted articles (found by the new tests).
+
+**Built differently from the plan:**
+
+* **RAF does not compile the LaTeX.** The plan said it would when a LaTeX program is installed. None is installed
+  on the development machine, so that path could not be tested and was left out. The generated source is checked by
+  tests for balanced braces and environments, escaped special characters, a `.bib` entry for every citation and a
+  file for every figure. **It has not been built with a real LaTeX engine**; the first compile on Overleaf is the
+  real test.
+* Long tables are continued in a second float after 30 rows; `longtable` does not work in two-column layouts.
+* A formatted article opens on the Publish page with its outline, not on a separate three-step page; the existing
+  Structure drawer does the renaming, reordering and leaving out.
+
+**Not done in 1.7:**
+
+* LaTeX files cannot be brought in for formatting (Word, Markdown, plain text and PDF can).
+* Sections of a formatted article cannot be merged or split in the interface.
+* Converting in-text citations between author–date and numbered styles (as planned, not attempted).
+* The Crossref lookups (reference restyle, BibTeX completion) were tested with stand-in replies, not against the
+  live service.
 
 **Goal:** RAF's output goes wherever an article needs to go, and RAF's typesetting works on articles it did not write.
 

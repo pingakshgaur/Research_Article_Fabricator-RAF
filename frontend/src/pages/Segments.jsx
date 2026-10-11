@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api.js";
+import StructureEditor from "../StructureEditor.jsx";
 import { Button, Icon, Segmented, Toggle, useToast } from "../ui.jsx";
 
 const PRESETS = {
@@ -25,7 +26,7 @@ const TONE_SAMPLES = {
 };
 const WORDS_PER_PAGE = 500;
 
-export const defaultWords = (seg, project) => (seg.key === "abstract" ? 220 : Math.round((project.target_words * seg.word_share) / 10) * 10);
+export const defaultWords = (seg, project) => (seg.custom ? seg.words : seg.key === "abstract" ? 220 : Math.round((project.target_words * seg.word_share) / 10) * 10);
 const pagesOf = (w) => Math.round((w / WORDS_PER_PAGE) * 10) / 10;
 
 function sizeOf(words, entry) {
@@ -36,8 +37,9 @@ function sizeOf(words, entry) {
 
 export default function Segments({ project, setProject, navigate, health }) {
   const toast = useToast();
-  const [catalogue, setCatalogue] = useState([]);
-  const [selected, setSelected] = useState(() => new Set(project.selected?.length ? project.selected : []));
+  const catalogue = project.structure;     // every segment of this article, in reading order (built-in and added)
+  const [selected, setSelected] = useState(() => new Set(project.selected?.length ? project.selected : catalogue.map((s) => s.key)));
+  const [arranging, setArranging] = useState(false);
   const [web, setWeb] = useState(project.options?.web_research ?? true);
   const [data, setData] = useState(project.options?.data_analysis ?? true);
   const [depth, setDepth] = useState(project.options?.depth ?? "thorough");
@@ -51,13 +53,15 @@ export default function Segments({ project, setProject, navigate, health }) {
   const [tone, setTone] = useState(project.tone || { name: "academic", intensity: 50 });
   const [starting, setStarting] = useState(false);
 
+  useEffect(() => { api.tones().then(setTones).catch(() => {}); }, []);
+
+  // a segment added in the structure drawer is selected straight away
+  const known = useRef(new Set(catalogue.map((s) => s.key)));
   useEffect(() => {
-    api.catalogue().then((c) => {
-      setCatalogue(c);
-      if (!project.selected?.length) setSelected(new Set(c.map((s) => s.key)));
-    });
-    api.tones().then(setTones).catch(() => {});
-  }, [project.selected]);
+    const fresh = catalogue.filter((s) => !known.current.has(s.key)).map((s) => s.key);
+    fresh.forEach((k) => known.current.add(k));
+    setSelected((s) => new Set([...s].filter((k) => catalogue.some((c) => c.key === k)).concat(fresh)));
+  }, [catalogue]);
 
   useEffect(() => {
     api.lengthProfile(project.article_type, project.target_words).then(setProfile).catch(() => {});
@@ -110,7 +114,10 @@ export default function Segments({ project, setProject, navigate, health }) {
             <Button key={k} size="sm" variant={k === "none" ? "ghost" : ""} onClick={() => preset(p.keys)}>{p.label}</Button>
           ))}
         </div>
-        <span className="mono muted" style={{ fontSize: 12 }}>{selected.size} / {catalogue.length} selected</span>
+        <div className="row">
+          <span className="mono muted" style={{ fontSize: 12 }}>{selected.size} / {catalogue.length} selected</span>
+          <Button size="sm" icon="plus" onClick={() => setArranging(true)}>Add, rename or reorder</Button>
+        </div>
       </div>
 
       <div className="seg-grid">
@@ -121,7 +128,7 @@ export default function Segments({ project, setProject, navigate, health }) {
             <button key={s.key} type="button" className={`seg-card rise ${on ? "on" : ""}`} style={{ "--i": 4 + i * 0.5 }}
               onClick={() => toggle(s.key)} aria-pressed={on}>
               <span className="check"><Icon name="check" size={14} stroke={2.6} /></span>
-              <span className="seg-no">§ {String(s.order + 1).padStart(2, "0")}{on && s.lengthable ? ` · ≈ ${pagesOf(wordsFor(s))} p` : ""}</span>
+              <span className="seg-no">§ {String(i + 1).padStart(2, "0")}{on && s.lengthable ? ` · ≈ ${pagesOf(wordsFor(s))} p` : ""}{s.custom ? (s.kind === "manual" ? " · you write" : " · added") : ""}</span>
               <span className="seg-title">{s.title}</span>
               <span className="seg-desc">{s.description}</span>
               {on && missing.length > 0 && (
@@ -253,6 +260,8 @@ export default function Segments({ project, setProject, navigate, health }) {
           </div>
         </div>
       </div>
+
+      <StructureEditor project={project} setProject={setProject} health={health} open={arranging} onClose={() => setArranging(false)} />
 
       <div className="actions-bar">
         <Button variant="ghost" icon="back" onClick={() => navigate(project.id, "references")}>References</Button>

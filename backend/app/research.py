@@ -65,6 +65,7 @@ def openalex(query: str) -> list[WebSource]:
                 venue=(((w.get("primary_location") or {}).get("source") or {}) or {}).get("display_name") or "",
                 doi=(w.get("doi") or "").replace("https://doi.org/", ""),
                 abstract=_abstract_from_inverted(w.get("abstract_inverted_index")),
+                oa_url=(w.get("best_oa_location") or {}).get("pdf_url") or (w.get("open_access") or {}).get("oa_url") or "",
             )
         )
     return out
@@ -104,7 +105,7 @@ def crossref(query: str) -> list[WebSource]:
 
 
 def semantic_scholar(query: str) -> list[WebSource]:
-    fields = "title,abstract,year,venue,authors,externalIds,url"
+    fields = "title,abstract,year,venue,authors,externalIds,url,openAccessPdf"
     # REST first with a single short retry: the client library retries 429s for minutes, which stalled whole runs.
     with _client() as c:
         r = c.get("https://api.semanticscholar.org/graph/v1/paper/search", params={"query": query, "limit": N, "fields": fields})
@@ -130,6 +131,7 @@ def semantic_scholar(query: str) -> list[WebSource]:
             venue=p.get("venue") or "",
             doi=(p.get("externalIds") or {}).get("DOI", "") or "",
             abstract=p.get("abstract") or "",
+            oa_url=(p.get("openAccessPdf") or {}).get("url") or "",
         )
         for p in papers
         if p.get("abstract")
@@ -149,7 +151,8 @@ def arxiv_search(query: str) -> list[WebSource]:
         feed = feedparser.parse(r.text)
         return [
             WebSource(source="arxiv", title=" ".join(e.title.split()), url=e.link, authors=[a.name for a in e.get("authors", [])[:8]],
-                      year=e.get("published", "")[:4], venue="arXiv", doi=e.get("arxiv_doi", ""), abstract=" ".join(e.get("summary", "").split()))
+                      year=e.get("published", "")[:4], venue="arXiv", doi=e.get("arxiv_doi", ""), abstract=" ".join(e.get("summary", "").split()),
+                      oa_url=e.link.replace("/abs/", "/pdf/"))
             for e in feed.entries
         ]
     except Exception:  # noqa: BLE001 - fall back to the arxiv client library
@@ -158,7 +161,7 @@ def arxiv_search(query: str) -> list[WebSource]:
         results = list(arxiv.Client(num_retries=1, delay_seconds=1).results(arxiv.Search(query=search, max_results=N)))
         return [
             WebSource(source="arxiv", title=r.title, url=r.entry_id, authors=[a.name for a in r.authors[:8]],
-                      year=str(r.published.year), venue="arXiv", doi=r.doi or "", abstract=r.summary.replace("\n", " "))
+                      year=str(r.published.year), venue="arXiv", doi=r.doi or "", abstract=r.summary.replace("\n", " "), oa_url=r.entry_id.replace("/abs/", "/pdf/"))
             for r in results
         ]
 
@@ -193,7 +196,8 @@ def europe_pmc(query: str) -> list[WebSource]:
         WebSource(source="europepmc", title=i.get("title", ""), url=f"https://europepmc.org/article/{i.get('source')}/{i.get('id')}",
                   authors=[a.strip() for a in (i.get("authorString") or "").split(",")[:8]], year=str(i.get("pubYear", "")),
                   venue=(i.get("journalInfo") or {}).get("journal", {}).get("title", ""), doi=i.get("doi", ""),
-                  abstract=_strip_tags(i.get("abstractText")))
+                  abstract=_strip_tags(i.get("abstractText")),
+                  oa_url=f"https://europepmc.org/backend/ptpmcrender.fcgi?accid={i['pmcid']}&blobtype=pdf" if i.get("pmcid") and i.get("isOpenAccess") == "Y" else "")
         for i in items
         if i.get("abstractText")
     ]
@@ -397,3 +401,76 @@ def research(queries: list[str], discipline: str, progress: Callable[[str], None
         seen.add(key)
         unique.append(w)
     return unique
+
+
+# ------------------------------------------------------------------ open-access full text (Mixed and Research-only projects)
+MAX_PDF_BYTES = 30 * 1024 * 1024
+MIN_FULLTEXT_CHARS = 3000
+
+
+def unpaywall(doi: str) -> str:
+    """Address of a legal open-access PDF for a DOI, from Unpaywall; "" when there is none or the service cannot be reached."""
+    try:
+        with _client() as c:
+            r = c.get(f"https://api.unpaywall.org/v2/{doi}", params={"email": settings.contact_email})
+        return ((r.json().get("best_oa_location") or {}).get("url_for_pdf") or "") if r.status_code == 200 else ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def download_pdf(url: str, dest) -> bool:
+    try:
+        with httpx.Client(timeout=40, headers={**UA, "Accept": "application/pdf,*/*"}, follow_redirects=True) as c:
+            with c.stream("GET", url) as r:
+                if r.status_code != 200:
+                    return False
+                data = b""
+                for block in r.iter_bytes():
+                    data += block
+                    if len(data) > MAX_PDF_BYTES:
+                        return False
+        if not data.startswith(b"%PDF"):
+            return False
+        dest.write_bytes(data)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def fetch_fulltext(sources: list[WebSource], directory, limit: int = 12, progress: Callable[[str], None] | None = None) -> int:
+    """Download and read the whole paper for up to `limit` sources that are legally open access. The text of each goes to
+    <directory>/web_<id>.txt and the source is marked `fulltext`. Sources are tried in the order given (most relevant first).
+    Returns how many are available in full."""
+    from .ingest import read_pdf, strip_back_matter
+
+    have = 0
+    for w in sources:      # full texts kept from an earlier run
+        if (directory / f"web_{w.id}.txt").exists():
+            w.fulltext, have = True, have + 1
+    todo = [w for w in sources if not w.fulltext and (w.oa_url or w.doi)]
+
+    def get(w: WebSource):
+        url = w.oa_url or unpaywall(w.doi)
+        path = directory / f"web_{w.id}.pdf"
+        return w, path if url and download_pdf(url, path) else None
+
+    for start in range(0, len(todo), 8):       # in batches, so nothing more is downloaded once enough papers are in
+        if have >= limit:
+            break
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            fetched = list(pool.map(get, todo[start:start + 8]))
+        for w, path in fetched:                # PDF libraries are not thread-safe: read one at a time
+            if path is None:
+                continue
+            try:
+                body = strip_back_matter(read_pdf(path).text) if have < limit else ""
+                if len(body) >= MIN_FULLTEXT_CHARS:
+                    (directory / f"web_{w.id}.txt").write_text(body, encoding="utf-8")
+                    w.fulltext, w.chars, have = True, len(body), have + 1
+                    if progress:
+                        progress(f"✓ Full text read: {w.title[:80]} ({len(body):,} characters)")
+            except Exception as exc:  # noqa: BLE001
+                log.info("could not read %s: %s", path.name, exc)
+            finally:
+                path.unlink(missing_ok=True)
+    return have

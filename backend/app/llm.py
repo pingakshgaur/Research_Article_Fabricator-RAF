@@ -6,6 +6,7 @@ import logging
 import re
 import threading
 import time
+from contextlib import contextmanager
 from typing import Callable
 
 import httpx
@@ -148,6 +149,46 @@ def wait_for_ollama(max_wait: int) -> bool:
     return False
 
 
+_stream = threading.local()
+
+
+@contextmanager
+def streaming(sink: Callable[[str | None], None]):
+    """While this is open, prose calls made by this thread stream: `sink` gets each piece of text as the model produces it,
+    and `None` whenever a call starts (again), so a retry does not leave half a passage behind. JSON calls never stream."""
+    previous = getattr(_stream, "sink", None)
+    _stream.sink = sink
+    try:
+        yield
+    finally:
+        _stream.sink = previous
+
+
+def _post(client: httpx.Client, payload: dict, sink) -> tuple[int, str]:
+    """One request to Ollama. Returns (status, text): the answer on 200, the error body otherwise."""
+    if sink is None:
+        r = client.post(f"{settings.ollama_url}/api/chat", json=payload)
+        return r.status_code, (r.json()["message"]["content"] if r.status_code == 200 else r.text)
+    sink(None)
+    parts: list[str] = []
+    with client.stream("POST", f"{settings.ollama_url}/api/chat", json={**payload, "stream": True}) as r:
+        if r.status_code != 200:
+            return r.status_code, r.read().decode("utf-8", "replace")
+        for line in r.iter_lines():
+            if not line:
+                continue
+            d = json.loads(line)
+            if d.get("error"):
+                return 500, str(d["error"])
+            piece = (d.get("message") or {}).get("content", "")
+            if piece:
+                parts.append(piece)
+                sink(piece)
+            if d.get("done"):
+                break
+    return 200, "".join(parts)
+
+
 def chat(
     messages: list[dict],
     *,
@@ -173,23 +214,24 @@ def chat(
         }
         if json_mode:
             payload["format"] = "json"
+        sink = None if json_mode else getattr(_stream, "sink", None)
         slot = runtime.acquire()
         try:
             with httpx.Client(timeout=s["request_timeout"]) as client:
-                r = client.post(f"{settings.ollama_url}/api/chat", json=payload)
-                if r.status_code == 400 and "think" in r.text:
+                status, text = _post(client, payload, sink)
+                if status == 400 and "think" in text:
                     payload.pop("think", None)  # older Ollama builds reject the flag
-                    r = client.post(f"{settings.ollama_url}/api/chat", json=payload)
-            if r.status_code == 200:
-                return _clean(r.json()["message"]["content"])
-            body = r.text.lower()
-            last = LLMError(f"HTTP {r.status_code}: {r.text[:300]}")
-            if r.status_code >= 500 and any(k in body for k in _MEMORY_ERRORS):
+                    status, text = _post(client, payload, sink)
+            if status == 200:
+                return _clean(text)
+            body = text.lower()
+            last = LLMError(f"HTTP {status}: {text[:300]}")
+            if status >= 500 and any(k in body for k in _MEMORY_ERRORS):
                 # Fallback ladder: fewer parallel agents first, then less GPU offload.
                 if not runtime.reduce_capacity() and not runtime.lower_gpu():
                     time.sleep(10)
-            elif r.status_code in {400, 404}:
-                raise LLMError(f"Ollama rejected the request: {r.text[:300]}")
+            elif status in {400, 404}:
+                raise LLMError(f"Ollama rejected the request: {text[:300]}")
             else:
                 time.sleep(3 * (attempt + 1))
         except (httpx.ConnectError, httpx.RemoteProtocolError, httpx.ReadError) as exc:

@@ -8,7 +8,7 @@ article as **DOCX, PDF or Markdown**.
 All text generation runs on your own machine through **Ollama + `gemma4:12b`**, a 12-billion-parameter small language
 model (SLM). RAF uses no API keys and has no cloud LLM.
 
-**Current version: 1.4.0** (API and web interface). This README covers how to install, run and use RAF and how the
+**Current version: 1.7.0** (API and web interface). This README covers how to install, run and use RAF and how the
 code is laid out. The full product specification is in [PRD.md](PRD.md).
 
 **Jump to:** [Quick start](#quick-start-windows) · [What you need](#what-you-need) ·
@@ -16,7 +16,7 @@ code is laid out. The full product specification is in [PRD.md](PRD.md).
 [3. Ollama and models](#3-install-ollama-and-download-the-models) · [4. Run RAF](#4-run-raf) ·
 [5. Check it works](#5-check-that-everything-works) · [Configuration](#configuration-environment-variables) ·
 [Troubleshooting](#troubleshooting) · [API](#api-overview) · [Project layout](#project-layout) ·
-[Where data is stored](#where-data-is-stored) · [Working on the code](#working-on-the-code)
+[LaTeX and reference files](#latex-and-reference-files) · [Format an existing article](#format-an-existing-article) · [Article structure](#article-structure) · [Library, History and Revisions](#library-history-and-revisions) · [Settings and themes](#settings-and-themes) · [Where data is stored](#where-data-is-stored) · [Working on the code](#working-on-the-code)
 
 ---
 
@@ -26,10 +26,164 @@ code is laid out. The full product specification is in [PRD.md](PRD.md).
 |---|---|
 | **01 Topic & title** | Title, research focus, discipline, article type (empirical, systematic review, conceptual, case study, mixed methods), citation style (APA / Harvard / Chicago / IEEE), target length (2,500–12,000 words), authors and affiliation. |
 | **02 References** | Upload 10–20 PDF / DOCX / Markdown / TXT articles, up to 60 MB each. You can also upload your own dataset (CSV / TSV / XLSX / XLS). |
-| **03 Segments** | Choose any of: Title, Abstract, Keywords, Introduction, Review of Literature, Methodology, Results/Analysis, Discussion, Conclusion & Implications, Limitations & Future Research, References, Appendices. Presets: Full article, Core IMRaD, Literature-focused. On the same page you set the length of each segment, the tone, the writing depth, the number of agents, and switch online research, data analysis, the hallucination filter and the style pass on or off. |
+| **03 Segments** | Choose any of: Title, Abstract, Keywords, Introduction, Review of Literature, Methodology, Results/Analysis, Discussion, Conclusion & Implications, Limitations & Future Research, References, Appendices — or rename them, reorder them and add your own (see [Article structure](#article-structure)). Presets: Full article, Core IMRaD, Literature-focused. On the same page you set the length of each segment, the tone, the writing depth, the number of agents, and switch online research, data analysis, the hallucination filter and the style pass on or off. |
 | **04 Fabrication** | RAF first estimates how long the run will take, then a live pipeline view streams every step: parsing, research, indexing, analysis, writing, and integrity checks. |
 | **05 Studio** | Read each segment on a paper-style page with hoverable citations, tables and figures. Request changes in plain language, apply text tools (Expand, Condense, Formalize, Simplify, Add citations, Polish, Humanize, Strengthen) to a whole segment or a selected passage, edit by hand, regenerate, restore any of the last 20 versions, and approve. Up to three segments can be worked on at the same time. |
-| **06 Publish** | Pick a template and colour style, preview the layout, and once every segment is approved, download a typeset PDF or DOCX (or Markdown). A draft export is available before everything is approved. You can also re-import an edited DOCX, PDF or Markdown file, and RAF splits it back into segments by matching its headings. |
+| **06 Publish** | Pick a template and colour style, preview the layout, and once every segment is approved, download a typeset PDF, DOCX, LaTeX or Markdown file. A draft export is available before everything is approved, and the reference list can be saved on its own as BibTeX or RIS. You can also re-import an edited DOCX, PDF or Markdown file, and RAF splits it back into segments by matching its headings. |
+
+## LaTeX and reference files
+
+* **LaTeX** is a fourth format on the Publish page. It downloads a `.zip` with `main.tex`, `references.bib`, a
+  `figures/` folder and a short read-me. Upload the `.zip` to Overleaf (*New Project → Upload Project*) and it is
+  ready; on your own computer run `latexmk -pdf main.tex`.
+* **Each template has a LaTeX counterpart:** Modern Report, Classic Journal and Minimal Monograph use the standard
+  `article` class with a RAF preamble, APA 7 Manuscript uses the `apa7` class, and Two-Column Conference uses
+  `IEEEtran`. The colour style becomes the accent colour.
+* **Citations are real.** In Word and PDF a citation is text, such as "(Smith, 2021)". In LaTeX it is a
+  `\parencite{smith2021digital}` command backed by a BibTeX entry, so a journal's own style can restyle everything.
+  RAF's citation style chooses the `biblatex` style: APA, author-year (Harvard), Chicago author-date or IEEE.
+* **More complete entries.** When online research is switched on for the project, sources that have a DOI are
+  completed with volume, issue and pages from Crossref.
+* **Reference list on its own.** Two buttons on the Publish page save the reference list as **BibTeX** or **RIS**,
+  for Zotero, Mendeley, EndNote or your own `.bib` file. This does not need the segments to be approved.
+* RAF does not compile LaTeX itself. It uses only widely available packages, and table and figure numbers are written
+  out exactly as in the article, so the text and its references to them always agree.
+
+## Format an existing article
+
+**Format an existing article**, on the RAF home page, takes a finished article and typesets it. RAF changes the
+layout. It does not rewrite your text.
+
+1. **Bring it in.** Drop a file on the page.
+
+   | File | What is kept |
+   |---|---|
+   | Word (`.docx`) | headings and sub-headings, bold, italic, superscript and subscript, tables, pictures, captions |
+   | Markdown (`.md`) | headings, bold and italic, tables |
+   | Plain text (`.txt`) | paragraphs; headings are recognised when numbered, in capitals, or a usual section name |
+   | PDF | text and headings only (told apart by font size). Tables and pictures are lost. |
+
+2. **Check the outline.** RAF finds the title, authors, abstract, keywords, sections and reference list, and opens
+   the Publish page with all of them listed. Every section is a segment that belongs to you: RAF never generates it,
+   and it is already approved. Use **Arrange, rename or leave out** to fix the outline, or the Studio to edit text.
+3. **Typeset.** Pick a template and colour style and download PDF, Word, LaTeX or Markdown.
+
+Two extras, both only when you ask:
+
+* **Checks.** Compares the citations in the text with the reference list (cited but missing; listed but never cited)
+  for author–date and numbered styles, and reports a writing-style score per section. Nothing is changed.
+* **Restyle the reference list (experimental).** Looks each entry up in Crossref, which goes online, and re-formats
+  the ones it can identify in APA, Harvard or Chicago. Entries it cannot identify stay exactly as they were.
+  Citations in the text are not changed, which is why numbered styles are not offered.
+
+What to expect: a line starting "Table 2." above a table, or "Figure 3." below a picture, becomes its caption. Asterisks
+and similar characters in your text stay literal (they appear as `\*` in the Studio editor). Merging or splitting
+sections is not available yet; LaTeX files cannot be brought in yet.
+
+## Article structure
+
+RAF's twelve segments are where every article starts, not a limit. The **Structure** drawer opens from the Segments
+page ("Add, rename or reorder"), from the Studio (the *Structure* button under the segment list) and from the Publish
+page. Everything in it can be done before or after fabrication.
+
+* **Rename.** Click a segment's title and type a new one ("Review of Literature" → "Theoretical Background"). The new
+  title is used in the Studio, in every export and in the Contents list, and the importer recognises a heading under
+  either name. RAF's writing rules for the segment do not change. *use "…"* puts the usual title back.
+* **Add a segment.** Two kinds:
+  * **RAF writes it.** Give it a title and say in a sentence or two what it should do. RAF writes it with the same
+    pipeline as any body segment (evidence, notes, draft, peer review, filters). By default it has three parts
+    (purpose and context, core content, link to the article); **Let RAF propose its parts** asks the model for a
+    structure made for this segment, which you can edit before adding.
+  * **I write it.** A segment RAF never generates. It appears in the Studio at once.
+  * A **gallery** covers the usual ones in one click: Theoretical Framework, Hypothesis Development, Case Description
+    and Policy Context (RAF writes); Acknowledgements, Funding, Conflict of Interest, Data Availability, Author
+    Contributions and AI-Use Statement (you write, with starter text; the AI-use statement is filled from the History).
+  * A project can have up to 12 added segments. Segments RAF writes are numbered like any section; ones you write are
+    not.
+* **Reorder.** Drag a segment, or use its up and down buttons. Title, Abstract and Keywords always stay first. Section
+  numbers follow the new order.
+* **Leave out.** The switch on each row takes a segment out of the document without deleting it. Its text is kept, it
+  no longer has to be approved before publishing, and it can come back at any time.
+* **Write later.** A segment that has no text yet (one you added after fabrication, or a built-in one that was not
+  selected) shows *write it now*; RAF writes just that segment in the background.
+* **Delete.** Only segments you added can be deleted. Built-in ones are left out instead.
+* **The reference list follows.** References are rebuilt from the citations in the segments that are in the document
+  whenever citing text is edited, added, removed, reordered or left out, and again at every export. The exception is a
+  list you edited by hand: RAF leaves it alone until you press **Regenerate** on it.
+* Saved **revisions** remember the structure, so restoring one brings back its titles, order and added segments.
+
+## Library, History and Revisions
+
+These three pages sit beside the six workflow steps, in the left-hand rail.
+
+* **Library.** Every project on one page, with search, a filter by stage and sorting by last activity, date, title,
+  progress or length. Each row shows the article type, references, segments approved, word count and fabrication time.
+  From here you can rename, duplicate, archive, delete, and **back up** a project to a single `.zip` file or
+  **restore** one. Restoring never overwrites: if the project still exists, the backup comes back as a separate copy.
+  The home page shows only the five most recent projects.
+* **History.** A timeline of everything that happened to an article, newest first: what RAF drafted, revised or
+  checked, what you edited, approved, restored, imported or published, and every change of settings. Filter by kind
+  of event, by segment, or by who did it, and export the list as CSV or Markdown. The record is never trimmed.
+  Projects made before version 1.5 get a history rebuilt from their saved segment versions.
+* **AI-use statement.** On the History page, one button drafts the disclosure paragraph many journals ask for. It is
+  written from recorded facts only (which segments RAF drafted, which tools were used, how many edits you made by
+  hand) and you can edit it before copying.
+* **Revisions.** A revision is a saved state of the *whole* article. Save one whenever you like and give it a name
+  ("First full draft", "Submitted"). RAF also saves one by itself at every publish and before a new fabrication run,
+  an import, a restore or a revision round. **Compare** any two revisions, or a revision with the current article,
+  and see the differences word by word in each segment. **Restore** a whole revision or a single segment from it;
+  the current state is saved first, so a restore can always be undone. Download a **changes-highlighted** DOCX or PDF
+  with additions in green and deletions struck through in red.
+* **Revision rounds.** Paste the comments of a reviewer, editor or supervisor. RAF splits them into separate points,
+  links each one to the segment it concerns and proposes a revision instruction. You change, apply or skip each point.
+  RAF then revises the segments concerned (all points for one segment in a single pass, with every integrity check
+  still running), saves the article before and after, and drafts a point-by-point **Response to reviewers** from what
+  actually changed. The letter is editable and downloads as Word or Markdown. If Ollama is not running, the comments
+  are still split by paragraph and numbering so you can prepare the round; applying it needs the model.
+
+## Settings and themes
+
+The **sidebar** shows the Library, the six workflow steps, and History and Revisions, separated by bold rules and
+without captions (hover a button for its description). Drag its right edge to make it wider or narrower; below a
+certain width it shows numbers and icons only. Double-click the edge to reset it, or focus it and use the arrow keys.
+The width is remembered by each browser.
+
+The gear button in the top bar opens **Settings**, the one place where RAF itself is adjusted. It has five tabs.
+
+* **Appearance.** Choose a **theme**. Each theme is a ten-colour ramp, and each has a dark and a light version:
+
+  | Theme | Colours |
+  |---|---|
+  | Violet & Lime | the original: violet on black, lime on sage |
+  | Rosewood | dusty rose warming into sand and pale leaf |
+  | Aurora | magenta through electric blue to sea green |
+  | Solar | deep indigo burning up to orange and yellow |
+  | Ember | burnt orange cooling through wine to midnight |
+  | **Custom** | any colour you pick; RAF works out the rest |
+
+  For the **Custom** theme, press the round rainbow button at the bottom right of this tab. Pick a colour with the
+  system colour dialog, the R / G / B sliders or a hex code. RAF derives every shade from that one colour, chooses
+  white or dark text for buttons, and adds a contrasting colour (the opposite hue) as a highlight, for dark and
+  light mode. The page previews the result as you move the sliders; nothing is saved until **Use this colour**.
+  Where a colour would make text hard to read, RAF nudges it lighter or darker just far enough: the engine is
+  tested over the whole colour space against the standard 4.5 : 1 contrast.
+
+  The theme is saved for this RAF installation. Dark or light is a choice of each browser (the switch in the top bar
+  does the same). You can also turn the **background effects** off for a calmer page, and give the installation a
+  **workspace name** that appears under the RAF mark. The theme colours the interface only; published documents keep
+  the colour style chosen on the Publish page.
+* **New articles.** The defaults every new project starts with: authors, affiliation, discipline, article type,
+  citation style and target length, and how RAF writes (online research, data analysis, hallucination filter, style
+  pass, writing depth, number of agents, tone). Existing projects keep their own choices.
+* **Language model.** What used to be the Developer Tools drawer: choose the model and set temperature,
+  top-p/top-k/min-p, penalties, seed, context window, output limit, batch size, GPU layers, CPU threads, keep-alive,
+  thinking mode and timeout. Includes three presets and a real speed test.
+* **Admin lock.** Set a passcode, and from then on settings can be read by anyone but changed only after the passcode
+  is entered. An unlocked session lasts 12 hours or until the API restarts. Five wrong attempts cause a 30-second
+  wait. The lock covers the Settings page; it does not hide articles. It is also not protection against someone who
+  can open the data folder: the passcode is stored only as a salted hash, but deleting the `"admin"` entry in
+  `app_settings.json` removes the lock. That is also how a forgotten passcode is recovered.
+* **About.** Version, model, data folder, number of projects, and a button that resets RAF's settings.
 
 ## Reliability & speed features
 
@@ -60,8 +214,8 @@ code is laid out. The full product specification is in [PRD.md](PRD.md).
 * **Tone meter**. Five tones (Formal academic, Critical-analytical, Argumentative, Explanatory, Reflective/narrative), each with an intensity slider.
 * **Length plan**. Short / Medium / Long, pages or words for each segment. Suggestions follow the usual proportions of the selected article type.
 * **Publishing templates**. Modern Report, Classic Journal, APA 7 Manuscript, Two-Column Conference and Minimal Monograph, in 7 colour styles (the APA template is monochrome), for both PDF and DOCX. **Preview layout** opens a panel inside the app that typesets excerpts of your own article in each template, and **Draft preview** exports the real file before every segment is approved.
-* **Developer Tools** (sliders button in the top bar). Choose the model and set temperature, top-p/top-k/min-p, repeat, presence and frequency penalties, seed, context window, output limit, batch size, GPU layers, CPU threads, keep-alive, thinking mode and timeout. Includes three presets (Precise, Balanced, Expressive) and a real speed test, and shows which model is loaded and how much of it sits on the GPU. Settings are stored in `<data_dir>/llm_settings.json` and apply from the next model call.
-* **Interface**. Light and dark themes (the switch is in the top bar), and a status pill that shows whether Ollama and the model are ready.
+* **Settings** (gear button in the top bar). Themes, defaults for new articles, the language-model controls and an optional admin lock. See [Settings and themes](#settings-and-themes).
+* **Interface**. Five built-in colour themes and a Custom one made from any colour, each in dark and light (the switch is in the top bar); a sidebar you can resize; and a status pill that shows whether Ollama and the model are ready.
 
 A note on AI detectors: these features aim to make articles accurate, well-sourced and well-written. They are not built to beat AI-detection tools, which are unreliable in both directions. Review the text yourself and follow your venue's rules on disclosing AI assistance.
 
@@ -111,6 +265,7 @@ for each segment (dependency order) ─► blueprint moves ─► retrieve ─�
   follow your target journal's policy on disclosing AI assistance.
 * Results come only from data RAF actually analysed. If no suitable data exists, the Results segment becomes a
   clearly labelled evidence synthesis instead of invented statistics.
+* RAF does not compile LaTeX. The export has been checked for correct structure, not built with a LaTeX engine by RAF itself.
 * RAF does not run OCR. A scanned PDF with no text layer can't be read; use a text-based PDF or run OCR on it first.
 * `gemma4:12b` has **12 billion parameters** and a **262K-token context window** (it does not have a 12-billion-token
   window). RAF uses 16K tokens per call by default because it builds focused evidence packs for each part of a
@@ -367,11 +522,11 @@ More agents use more memory. If your machine has little RAM, stay on Solo.
 
 ## Use a different model
 
-RAF reads the model name from `RAF_MODEL` (default `gemma4:12b`), and you can also switch it in **Developer Tools**
-inside the app. Developer Tools is the simpler route: it lists the models Ollama has installed, the change applies from
+RAF reads the model name from `RAF_MODEL` (default `gemma4:12b`), and you can also switch it under **Settings → Language model**
+inside the app. That is the simpler route: it lists the models Ollama has installed, the change applies from
 the next model call, and no restart is needed. To use the variable instead, pull the model first, then start the API
 with the new name (see [Configuration](#configuration-environment-variables) for how to set variables on each system,
-and note that a model saved in Developer Tools takes priority over the variable):
+and note that a model saved in Settings takes priority over the variable):
 
 ```bash
 ollama pull <model-name>
@@ -390,6 +545,8 @@ noticeably weaker text. Check its output carefully.
   other systems re-run the `pip install` and `npm install` commands from Option B.
 * **Stop:** press `Ctrl+C` in (or close) the API and UI windows. Ollama keeps the model in memory for a while after the
   last request; free the memory at once with `ollama stop gemma4:12b`.
+* **Back up one project:** in the Library, the download button on a project's row saves it as a single `.zip`;
+  **Restore a backup** brings it back on this or another computer.
 * **Your data:** projects, uploads, indexes, figures and exports live in `backend/data` (or the folder in
   `RAF_DATA_DIR`). Copy that folder to back it up or to move your projects to another computer.
 * **Privacy:** the writing model runs entirely on your machine. The online research step sends search queries to public
@@ -416,10 +573,10 @@ inherits the variable. With Docker, `docker-compose.yml` passes only `RAF_OLLAMA
 `RAF_NUM_GPU` through (from your shell or a `.env` file next to it). Add any other variable under `environment:` for the
 `backend` service.
 
-**Developer Tools take priority for model settings.** `RAF_MODEL`, `RAF_NUM_CTX`, `RAF_NUM_GPU` and `RAF_LLM_TIMEOUT`
-only set the starting defaults. The first time you press **Save settings** in Developer Tools, RAF writes every model
+**Settings → Language model takes priority for model settings.** `RAF_MODEL`, `RAF_NUM_CTX`, `RAF_NUM_GPU` and `RAF_LLM_TIMEOUT`
+only set the starting defaults. The first time you press **Save settings** there, RAF writes every model
 setting to `<data_dir>/llm_settings.json`, and from then on that file wins over these four variables. **Reset to
-defaults** in Developer Tools deletes the file and returns control to the environment variables.
+defaults** on the same tab deletes the file and returns control to the environment variables.
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -431,6 +588,7 @@ defaults** in Developer Tools deletes the file and returns control to the enviro
 | `RAF_LLM_TIMEOUT` | `900` | Seconds to wait for one model response |
 | `RAF_OLLAMA_WAIT` | `600` | Seconds to wait for Ollama to come back after a crash or restart |
 | `RAF_MIN_REFS` / `RAF_MAX_REFS` | `10` / `20` | Reference count limits |
+| `RAF_WEB_RESEARCH` | `true` | Whether the **Online research** switch starts on for new projects. Set `false` to start with it off. |
 | `RAF_RESULTS_PER_SOURCE` | `5` | Results fetched from each research source |
 | `RAF_HTTP_TIMEOUT` | `25` | Seconds before an online research request times out |
 | `RAF_MAX_NGRAM_OVERLAP` | `0.04` | Originality guard: maximum 7-word shingle overlap with a source |
@@ -466,8 +624,9 @@ or an out-of-memory error. If that happens:
 | Port 8000 or 5173 is already in use | Close the other program. Or run the API on another port, e.g. `--port 8001`, set `RAF_API=http://localhost:8001`, and start the UI with `npm run dev -- --port 5180`. |
 | A reference PDF is rejected with "no extractable text" | It is probably a scan. RAF does not OCR; use a text-based PDF or run OCR on it first. |
 | Banner about an outdated server | Restart the API window so it picks up the new code. |
+| Word asks "This document contains fields that may refer to other files. Update the fields?" | Choose **Yes**. Modern Report and Minimal Monograph files have a Contents page, and this is Word filling in its page numbers. The list of headings is there either way. |
 | Online research returns nothing | Check your internet connection or proxy. RAF carries on without research; you can also switch off **Online research** on the Segments page. |
-| Changing `RAF_MODEL`, `RAF_NUM_CTX`, `RAF_NUM_GPU` or `RAF_LLM_TIMEOUT` has no effect | Settings saved in Developer Tools take priority. Open Developer Tools and press **Reset to defaults**, or change the value there. |
+| Changing `RAF_MODEL`, `RAF_NUM_CTX`, `RAF_NUM_GPU` or `RAF_LLM_TIMEOUT` has no effect | Settings saved under Settings → Language model take priority. Open that tab and press **Reset to defaults**, or change the value there. |
 | "RAF is busy with …" or "already working on 3 segments" (HTTP 409) | Another job is running on that project or segment. Wait for it to finish, then try again. |
 | Docker backend cannot reach Ollama | Make sure Ollama is running on the host. On Linux start it with `OLLAMA_HOST=0.0.0.0`. |
 
@@ -479,15 +638,22 @@ All routes are under `/api`. `{id}` is a project id and `{key}` a segment key su
 | Area | Routes |
 |---|---|
 | **System** | `GET /health` (status, API version, Ollama and model state, reference limits) · `GET /segments` (segment catalogue) · `GET /tones` · `GET /length-profile?article_type=&target_words=` · `GET /publish/styles` |
-| **Projects** | `GET /projects` · `POST /projects` · `GET /projects/{id}` · `PATCH /projects/{id}` · `DELETE /projects/{id}` · `POST /projects/{id}/stage/{stage}` |
+| **Projects** | `GET /projects` (one summary line per project) · `POST /projects` · `GET /projects/{id}` · `PATCH /projects/{id}` · `DELETE /projects/{id}` · `POST /projects/{id}/stage/{stage}` |
+| **Library** | `POST /projects/{id}/rename` · `POST /projects/{id}/duplicate` · `POST /projects/{id}/archive?archived=` · `GET /projects/{id}/backup` (a `.zip`) · `POST /projects/restore` (upload a backup) |
+| **History** | `GET /projects/{id}/history` · `GET /projects/{id}/ai-statement` |
+| **Revisions** | `GET /projects/{id}/revisions` · `POST /projects/{id}/revisions` (save) · `PATCH` and `DELETE /projects/{id}/revisions/{n}` · `POST /projects/{id}/revisions/{n}/restore?key=` · `GET /projects/{id}/compare?a=&b=` · `GET /projects/{id}/compare/export/{docx\|pdf}?a=&b=` |
+| **Revision rounds** | `GET /projects/{id}/rounds` · `POST /projects/{id}/rounds` (paste comments) · `GET`, `PUT` and `DELETE /projects/{id}/rounds/{rid}` · `POST /projects/{id}/rounds/{rid}/apply` · `GET /projects/{id}/rounds/{rid}/letter.docx` |
 | **Uploads** | `POST /projects/{id}/references` · `DELETE /projects/{id}/references/{rid}` · `POST /projects/{id}/datasets` · `DELETE /projects/{id}/datasets/{name}` |
 | **Project settings** | `PUT /projects/{id}/lengths` · `PUT /projects/{id}/tone` · `PUT /projects/{id}/publish-style` |
 | **Fabrication** | `POST /projects/{id}/generate` (start, or resume with `"resume": true`) · `GET /projects/{id}/events` (Server-Sent Events: log, stage, segment, checkpoint, job, error, done) · `POST /projects/{id}/review` (re-run the article review) |
 | **Studio** | `POST /projects/{id}/segments/{key}/revise` · `…/tool` · `…/regenerate` · `…/approve?approved=true\|false` · `…/restore/{n}` · `PUT /projects/{id}/segments/{key}` (manual edit) · `GET /projects/{id}/files/{path}` (figures) |
-| **Publishing** | `GET /projects/{id}/export/{pdf\|docx\|md}?draft=&template=&palette=` · `POST /projects/{id}/import` |
-| **Developer Tools** | `GET /settings/llm` · `PUT /settings/llm` · `DELETE /settings/llm` (reset) · `POST /settings/llm/benchmark` |
+| **Publishing** | `GET /projects/{id}/export/{pdf\|docx\|md\|tex}?draft=&template=&palette=` (`tex` returns a `.zip`) · `GET /projects/{id}/export/{bib\|ris}` (the reference list alone) · `POST /projects/{id}/import` |
+| **Format an article** | `POST /format` (upload a finished document; returns the new project and what was found) · `GET /projects/{id}/format/checks` · `POST /projects/{id}/format/restyle` (experimental) |
+| **Structure** | `GET /structure/gallery` · `PUT /projects/{id}/structure/titles/{key}` (rename; empty title = usual name) · `POST /projects/{id}/structure/segments` (add) · `PATCH` and `DELETE /projects/{id}/structure/segments/{key}` · `PUT /projects/{id}/structure/order` · `PUT /projects/{id}/structure/included/{key}?included=` · `POST /projects/{id}/structure/propose` · `POST /projects/{id}/segments/{key}/write`. Every project response also carries `structure`: all its segments in reading order. |
+| **Settings** | `GET /settings/app` · `PUT /settings/app` · `DELETE /settings/app` (reset) · `POST /settings/admin/unlock` · `POST /settings/admin/lock` · `PUT /settings/admin/passcode` · `GET /settings/llm` · `PUT /settings/llm` · `DELETE /settings/llm` (reset) · `POST /settings/llm/benchmark`. While a passcode is set, every `PUT` and `DELETE` here needs the `X-RAF-Admin` header with the token returned by `unlock`. |
 
-Status codes worth knowing: **409** means another job is running on the project or segment, **422** means the request
+Status codes worth knowing: **401** means settings are locked behind the admin passcode, **409** means another job is
+running on the project or segment, **422** means the request
 is not valid yet (too few references, unapproved segments, unknown template), and **503** means Ollama or the model is
 not available.
 
@@ -502,15 +668,24 @@ logo.png, logo.ico   RAF logo, 256 × 256 (not yet used by the app)
 .claude/launch.json  dev-server definitions for Claude Code's preview
 backend/
   requirements.txt   Python dependencies
+  requirements-dev.txt   adds pytest, for running the tests
+  pytest.ini
+  tests/             automated tests (no Ollama needed; one of them runs customTheme.js with Node)
   Dockerfile         Python 3.12 image, serves the API on port 8000
   app/
-    main.py          FastAPI routes + SSE, API_VERSION
+    main.py          creates the app; API_VERSION; health route
+    api/             the routes, one module per area: projects, library, arrange (article structure), fabrication, studio,
+                     publishing, record (history, revisions, rounds), settings
     models.py        Pydantic data model: Project, Segment, Reference, RunInfo, request bodies
     store.py         project persistence: one JSON file per project, with locking
     jobs.py          background jobs and the live event stream
+    history.py       the project's History log and the AI-use statement
+    revisions.py     whole-article revisions: save, compare, restore, changes-highlighted export
+    rounds.py        revision rounds: split comments into points, apply them, draft the response letter
     config.py        environment-variable settings
     writer.py        corpus pipeline, segment scheduler and builders, revision engine
     blueprints.py    per-segment writing rules, moves and checklists; tones; length profiles
+    structure.py     one article's structure: titles, added segments, order, what is left out
     estimate.py      speed probe, fabrication time estimate, self-calibration
     checkpoints.py   save and resume
     ingest.py        PDF / DOCX / Markdown reading, metadata, chunking
@@ -522,8 +697,11 @@ backend/
     originality.py   overlap detection, paraphrase enforcement, number verification
     citations.py     APA / Harvard / Chicago / IEEE formatting
     publisher.py     templates and palettes, DOCX + PDF + Markdown publishing, document re-import
+    latex.py         LaTeX export: main.tex, references.bib and figures in a .zip
+    formatter.py     "Format an existing article": read a document, find its outline, checks, reference restyle
     llm.py           Ollama client, agent slots, out-of-memory fallbacks
-    llm_settings.py  Developer Tools settings, presets, speed test
+    llm_settings.py  language-model settings, presets, speed test
+    app_settings.py  RAF's own settings: theme, defaults for new articles, admin lock
 frontend/
   package.json       Node dependencies (React 18 + Vite 5)
   vite.config.js     dev server on port 5173, forwards /api to the API
@@ -533,10 +711,14 @@ frontend/
     main.jsx, App.jsx     entry point; top bar, workflow rail, hash routing, API-version check
     api.js                every API call in one place, plus the event stream
     ui.jsx                shared components: buttons, dropdowns, toasts, icons
-    DevTools.jsx          Developer Tools drawer
+    DevTools.jsx          the language-model controls (shown as a tab of Settings)
     TemplatePreview.jsx   in-app preview of the publishing templates
-    styles.css            the whole design system, light and dark themes
-    pages/                Home, Setup, References, Segments, Processing, Studio, Publish
+    theme.js              applies the theme, dark / light mode and background effects
+    customTheme.js        the Custom theme: every colour derived from one picked colour
+    StructureEditor.jsx   the Structure drawer: rename, reorder, add, leave out
+    styles.css            the whole design system: five themes, each in dark and light
+    pages/                Home, Setup, References, Segments, Processing, Studio, Publish,
+                          Library, History, Revisions, Settings, Format
 ```
 
 Not in Git (see `.gitignore`): `.venv/`, `frontend/node_modules/`, `frontend/dist/`, `backend/data/`, `.scratch/`,
@@ -549,14 +731,18 @@ database.
 
 ```
 <data_dir>/
-  llm_settings.json        Developer Tools settings (only after the first Save)
+  app_settings.json        theme, defaults for new articles, admin lock (only after the first change)
+  llm_settings.json        language-model settings (only after the first Save)
   timing_history.json      estimated vs actual run times, used to calibrate estimates
+  backups/                 the last backup .zip made of each project
   projects/<project id>/
     project.json           the whole project: details, references, segments and their versions, run timer, log
+    history.jsonl          the History log: one line per event, never trimmed
+    revisions/             saved revisions (r0001.json + r0001_figures/) and revision rounds (round_<id>.json)
     uploads/               your reference files
     datasets/              your CSV / TSV / Excel files
     figures/               charts produced by the analysis
-    exports/               published PDF and DOCX files, and the last imported document
+    exports/               published PDF, DOCX and LaTeX (.zip) files, and the last imported document
     index/
       ref_<id>.txt, ref_<id>.tables.json   cleaned text and tables of each reference
       index.pkl, chunks.json               the retrieval index
@@ -564,20 +750,20 @@ database.
       style_profile.json                   writing-style profile of your references
 ```
 
-Deleting a project in the app removes its whole folder. `project.json` keeps the last 20 versions of each segment and
+Deleting a project in the app removes its whole folder, including its history and revisions; download a backup from
+the Library first if you may want it again. `project.json` keeps the last 20 versions of each segment and
 the last 400 log lines.
 
 ## Working on the code
 
 * **Keep the two version numbers equal.** `API_VERSION` in `backend/app/main.py` and `EXPECTED_API` in
-  `frontend/src/App.jsx` must match (both are `1.4.0`). When they differ, the interface shows the outdated-server
+  `frontend/src/App.jsx` must match (both are `1.7.0`). When they differ, the interface shows the outdated-server
   banner. Raise both whenever a backend change affects the interface.
 * **Restart the API after backend changes.** `start.bat` and the manual commands run `uvicorn` without `--reload`. The
   web interface reloads by itself when you edit files in `frontend/src`.
 * **Production build of the interface:** run `npm.cmd run build` in `frontend`; the result goes to `frontend/dist`.
   If a folder `backend/static` exists, the API serves it at `/`, so a copy of `dist` there gives you RAF on one port.
-* **Tests.** The repository has no automated test suite. Scratch test scripts and their data live in `.scratch/`,
-  which Git ignores.
+* **Tests.** Run `.venv\Scripts\python -m pytest backend/tests` from the project folder (install `backend/requirements-dev.txt` first; on macOS or Linux use `.venv/bin/python`). The tests need neither Ollama nor the internet: the model is replaced by a stand-in, and they write only to `.scratch/pytest-data`, never to your projects. Add a test with every change; one of them fails if the two version numbers above drift apart. Older scratch scripts live in `.scratch/`, which Git ignores.
 * **Trying changes without touching real projects:** start a second API with `RAF_DATA_DIR` pointing to another
   folder and a different port, and start the interface with `RAF_API` set to that port.
   `.claude/launch.json` contains ready-made definitions for this (API on 8011, interface on 5180).

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api.js";
+import StructureEditor from "../StructureEditor.jsx";
 import { Button, Icon, Spinner, timeAgo, useToast } from "../ui.jsx";
 import { fmtDuration } from "./Processing.jsx";
 
@@ -84,8 +85,6 @@ function MetaEditor({ segKey, seg, draft, setDraft, project }) {
   );
 }
 
-const ORDER = ["title", "abstract", "keywords", "introduction", "literature_review", "methodology", "results", "discussion", "conclusion", "limitations", "references", "appendices"];
-
 function useSources(project) {
   return useMemo(() => {
     const m = {};
@@ -116,6 +115,20 @@ function Inline({ text, sources }) {
         </span>
       </span>
     );
+  });
+}
+
+/* Inline formatting of imported articles (the same marks publisher.py typesets):
+   **bold**  *italic*  ^superscript^  ~subscript~ ; a backslash keeps a mark literal. */
+const MARKS = /(\*\*[^*\n]+?\*\*|\*[^*\n]+?\*|\^[^^\s][^^\n]*?\^|~[^~\s][^~\n]*?~)/;
+function richRuns(text) {
+  const held = text.replace(/\\\*/g, "").replace(/\\\^/g, "").replace(/\\~/g, "");
+  const literal = (s) => s.replace(//g, "*").replace(//g, "^").replace(//g, "~");
+  return held.split(MARKS).filter(Boolean).map((part, i) => {
+    if (!MARKS.test(part) || part.match(MARKS)[0] !== part) return literal(part);
+    if (part.startsWith("**")) return <b key={i}>{literal(part.slice(2, -2))}</b>;
+    const inner = literal(part.slice(1, -1));
+    return part[0] === "*" ? <i key={i}>{inner}</i> : part[0] === "^" ? <sup key={i}>{inner}</sup> : <sub key={i}>{inner}</sub>;
   });
 }
 
@@ -154,6 +167,10 @@ function SegmentBody({ seg, project, sources }) {
     if (m) return null;
     if (seg.key === "references") return b.split("\n").map((line, j) => <p key={`${i}-${j}`} className="ref-entry">{line}</p>);
     if (/^Appendix [A-Z]\./.test(b)) return <h4 key={i}>{b}</h4>;
+    if (project.mode === "format") {     // an article brought in for typesetting keeps its sub-headings and inline formatting
+      if (/^#{2,4} \S/.test(b) && !b.includes("\n")) return <h4 key={i}>{richRuns(b.replace(/^#+ /, ""))}</h4>;
+      return <p key={i}>{richRuns(b)}</p>;
+    }
     return b.split(seg.key === "appendices" ? "\n" : /\n(?!\n)/).map((para, j) => <p key={`${i}-${j}`}><Flagged text={para} flags={seg.quality.flags || []} sources={sources} /></p>);
   });
 }
@@ -194,9 +211,13 @@ function scoreColor(v) {
   return v >= 75 ? "var(--ok)" : v >= 50 ? "var(--warn)" : "var(--bad)";
 }
 
-export default function Studio({ project, setProject, navigate, events }) {
+export default function Studio({ project, setProject, navigate, events, health }) {
   const toast = useToast();
-  const keys = ORDER.filter((k) => project.segments[k]);
+  const rowOf = Object.fromEntries(project.structure.map((r) => [r.key, r]));     // the article's structure, as the author arranged it
+  const keys = project.structure.filter((r) => project.segments[r.key]).map((r) => r.key);
+  const unwritten = project.structure.filter((r) => !project.segments[r.key] && r.custom && r.kind === "generated");
+  const [arranging, setArranging] = useState(false);
+  const engineReady = health?.ollama && health?.model_available;
   const [active, setActive] = useState(() => keys.find((k) => project.segments[k].status !== "approved") || keys[0]);
   const [instruction, setInstruction] = useState("");
   const [editing, setEditing] = useState(false);
@@ -215,9 +236,12 @@ export default function Studio({ project, setProject, navigate, events }) {
   const segBusy = isBusy(active);
   const atLimit = !segBusy && jobCount >= maxJobs;              // this segment is free, but every job slot is taken
   const limitHint = atLimit ? `RAF is already working on ${maxJobs} segments — wait for one to finish` : undefined;
-  const approved = keys.filter((k) => project.segments[k].status === "approved").length;
+  const counted = keys.filter((k) => rowOf[k]?.included !== false);       // segments left out of the document are not counted
+  const approved = counted.filter((k) => project.segments[k].status === "approved").length;
 
   useEffect(() => { setEditing(false); setSelection(""); setBubble(null); }, [active]);
+  // the open segment can disappear (deleted in the structure drawer, or a restored revision without it): fall back to the first one
+  useEffect(() => { if (!project.segments[active] && keys[0]) setActive(keys[0]); }, [project.segments, active]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Tell the author when a background segment job finishes while they are looking at something else.
   const lastEvent = events[events.length - 1];
@@ -290,7 +314,7 @@ export default function Studio({ project, setProject, navigate, events }) {
               <Spinner size={11} /> {jobCount} / {maxJobs} in progress
             </span>
           )}
-          <span className="badge accent mono">{approved} / {keys.length} approved</span>
+          <span className="badge accent mono">{approved} / {counted.length} approved</span>
           <Button variant="primary" iconRight="arrow" disabled={!approved} onClick={() => navigate(project.id, "published")}>Publish</Button>
         </div>
       </div>
@@ -300,12 +324,20 @@ export default function Studio({ project, setProject, navigate, events }) {
           {keys.map((k) => {
             const s = project.segments[k];
             return (
-              <button key={k} className={`${k === active ? "on" : ""} ${jobs[k] ? "working" : ""}`} onClick={() => setActive(k)} title={jobs[k]}>
+              <button key={k} className={`${k === active ? "on" : ""} ${jobs[k] ? "working" : ""} ${rowOf[k]?.included === false ? "left-out" : ""}`}
+                onClick={() => setActive(k)} title={jobs[k] || (rowOf[k]?.included === false ? "Left out of the document" : undefined)}>
                 <span>{s.title}</span>
                 {jobs[k] ? <Spinner size={12} /> : <span className={`status-dot ${s.status}`} title={s.status} />}
               </button>
             );
           })}
+          {unwritten.map((r) => (
+            <button key={r.key} className="muted" disabled={busy || !engineReady || jobCount >= maxJobs} title={engineReady ? "RAF writes this segment now" : "Start Ollama to write"}
+              onClick={() => run(() => api.writeSegment(project.id, r.key), `RAF is writing ${r.title}`).then(() => setActive(r.key))}>
+              <span>+ Write {r.title}</span>
+              <Icon name="spark" size={13} />
+            </button>
+          ))}
           {[...META_KEYS].filter((k) => !project.segments[k]).map((k) => (
             <button key={k} className="muted" disabled={busy} title="Write this segment yourself"
               onClick={() => run(() => api.edit(project.id, k, k === "title" ? project.title : ""), `${META_TITLES[k]} added — edit it below`).then(() => setActive(k))}>
@@ -313,12 +345,18 @@ export default function Studio({ project, setProject, navigate, events }) {
               <Icon name="plus" size={13} />
             </button>
           ))}
+          <button className="seg-structure" onClick={() => setArranging(true)} title="Rename, reorder, add or leave out segments">
+            <span>Structure</span>
+            <Icon name="sliders" size={13} />
+          </button>
         </nav>
 
         <section>
           <div className="approve-bar">
             <div className="row">
               <span className={`badge ${seg.status === "approved" ? "ok" : seg.status === "failed" ? "bad" : "accent"}`}>{seg.status}</span>
+              {rowOf[active]?.included === false && <span className="badge" title="Open Structure to put it back">left out of the document</span>}
+              {rowOf[active]?.kind === "manual" && <span className="badge">written by you</span>}
               {seg.error && <span className="muted" style={{ fontSize: 12 }}>{seg.error}</span>}
             </div>
             <div className="row">
@@ -330,9 +368,9 @@ export default function Studio({ project, setProject, navigate, events }) {
               ) : (
                 <>
                   <Button size="sm" variant="ghost" icon="edit" disabled={segBusy} onClick={() => { setDraft(seg.content); setEditing(true); }}>Edit</Button>
-                  <Button size="sm" variant="ghost" icon="refresh" disabled={segBusy || atLimit} title={limitHint}
+                  {rowOf[active]?.kind !== "manual" && <Button size="sm" variant="ghost" icon="refresh" disabled={segBusy || atLimit} title={limitHint}
                     onClick={() => confirm(`Rewrite “${seg.title}” from scratch?`) && run(() => api.regenerate(project.id, active),
-                      `Regenerating ${seg.title} — you can keep working on other segments meanwhile`)}>Regenerate</Button>
+                      `Regenerating ${seg.title} — you can keep working on other segments meanwhile`)}>Regenerate</Button>}
                   {seg.status === "approved" ? (
                     <Button size="sm" onClick={() => run(() => api.approve(project.id, active, false))}>Unapprove</Button>
                   ) : (
@@ -510,6 +548,8 @@ export default function Studio({ project, setProject, navigate, events }) {
           </div>
         </aside>
       </div>
+
+      <StructureEditor project={project} setProject={setProject} health={health} open={arranging} onClose={() => setArranging(false)} />
 
       {bubble && !segBusy && !editing && (
         <div className="selection-bubble" style={{ left: bubble.x, top: bubble.y }} onMouseDown={(e) => e.preventDefault()}>

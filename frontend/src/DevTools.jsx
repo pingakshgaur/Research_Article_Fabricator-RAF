@@ -65,7 +65,8 @@ function Field({ f, spec, value, onChange }) {
   );
 }
 
-export default function DevTools({ open, onClose }) {
+/** Language-model settings. A drawer by default; `inline` renders the same controls as a panel of the Settings page. */
+export default function DevTools({ open, onClose, inline = false, locked = false }) {
   const toast = useToast();
   const [data, setData] = useState(null);
   const [form, setForm] = useState(null);
@@ -74,14 +75,14 @@ export default function DevTools({ open, onClose }) {
   const [benching, setBenching] = useState(false);
 
   const load = () => api.llmSettings().then((d) => { setData(d); setForm(d.settings); }).catch((e) => toast(e.message, "error"));
-  useEffect(() => { if (open) load(); }, [open]);
+  useEffect(() => { if (open || inline) load(); }, [open, inline]);
   useEffect(() => {
     const onKey = (e) => e.key === "Escape" && onClose();
     if (open) addEventListener("keydown", onKey);
     return () => removeEventListener("keydown", onKey);
   }, [open, onClose]);
 
-  if (!open) return null;
+  if (!open && !inline) return null;
   const dirty = form && data && JSON.stringify(form) !== JSON.stringify(data.settings);
   const set = (key) => (value) => setForm((f) => ({ ...f, [key]: value }));
 
@@ -103,7 +104,7 @@ export default function DevTools({ open, onClose }) {
     setBenching(true);
     setBench(null);
     try {
-      if (dirty) await save();
+      if (dirty && !locked) await save();
       setBench(await api.benchmark());
       load();
     } catch (e) {
@@ -117,9 +118,9 @@ export default function DevTools({ open, onClose }) {
   const loaded = data?.ollama?.loaded || [];
 
   return (
-    <div className="drawer-scrim" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <aside className="drawer" role="dialog" aria-label="Developer tools">
-        <header className="drawer-head">
+    <div className={inline ? undefined : "drawer-scrim"} onMouseDown={inline ? undefined : (e) => e.target === e.currentTarget && onClose()}>
+      <aside className={inline ? "settings-panel" : "drawer"} role={inline ? undefined : "dialog"} aria-label="Language model settings">
+        <header className="drawer-head" style={inline ? { display: "none" } : undefined}>
           <div>
             <div className="eyebrow">Developer tools</div>
             <div className="h2" style={{ fontSize: 24, margin: "6px 0 0" }}>Language model settings</div>
@@ -128,7 +129,7 @@ export default function DevTools({ open, onClose }) {
         </header>
 
         {!form ? <div className="empty"><Spinner /> Loading…</div> : (
-          <div className="drawer-body">
+          <div className={inline ? "settings-panel" : "drawer-body"}>
             <section className="card">
               <h5>Model</h5>
               <Select value={form.model} onChange={set("model")} aria-label="Model"
@@ -187,11 +188,11 @@ export default function DevTools({ open, onClose }) {
           </div>
         )}
 
-        <footer className="drawer-foot">
-          <Button variant="ghost" onClick={async () => { const r = await api.resetLlmSettings(); setForm(r.settings); setData((d) => ({ ...d, settings: r.settings })); toast("Defaults restored"); }}>Reset to defaults</Button>
+        <footer className={inline ? "settings-foot" : "drawer-foot"}>
+          <Button variant="ghost" disabled={locked} onClick={async () => { const r = await api.resetLlmSettings(); setForm(r.settings); setData((d) => ({ ...d, settings: r.settings })); toast("Defaults restored"); }}>Reset to defaults</Button>
           <div className="row">
             {dirty && <span className="badge warn">Unsaved</span>}
-            <Button variant="primary" icon="check" disabled={!dirty || saving} onClick={save}>{saving ? "Saving…" : "Save settings"}</Button>
+            <Button variant="primary" icon="check" disabled={!dirty || saving || locked} onClick={save}>{saving ? "Saving…" : "Save settings"}</Button>
           </div>
         </footer>
       </aside>

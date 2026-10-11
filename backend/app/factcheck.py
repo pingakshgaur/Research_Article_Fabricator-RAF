@@ -85,7 +85,7 @@ def sanitise(text: str, valid_labels: set[str]) -> tuple[str, list[dict]]:
         if kept:
             paragraphs.append(" ".join(kept))
     cleaned = "\n\n".join(paragraphs)
-    cleaned = re.sub(r"[ \t]+([.,;:])", r"\1", cleaned)
+    cleaned = re.sub(r"[ \t]+([.,;:])(?!\d)", r"\1", cleaned)
     return re.sub(r"[ \t]{2,}", " ", cleaned), flags
 
 
@@ -141,8 +141,9 @@ def _claims(text: str) -> list[dict]:
     return out
 
 
-def ground(text: str, ws, evidence: str, *, deep: bool, max_claims: int = 45) -> tuple[str, dict, list[dict]]:
+def ground(text: str, ws, evidence: str, *, deep: bool, max_claims: int = 45, key: str = "") -> tuple[str, dict, list[dict]]:
     p = ws.project
+    show = (lambda kind, before, after="": ws.edit(key, kind, before, after)) if key and hasattr(ws, "edit") else (lambda *a: None)   # the Window
     label_map = citations.label_map(p)
     index = ws.index
     claims = _claims(text)[:max_claims]
@@ -216,10 +217,12 @@ def ground(text: str, ws, evidence: str, *, deep: bool, max_claims: int = 45) ->
             new_sent = re.sub(r"([.!?])$", f" [{c['add_label']}]\\1", sent)
             paragraphs[c["paragraph"]] = para.replace(sent, new_sent, 1)
             stats["auto_cited"] += 1
+            show("cited", sent, new_sent)
         elif verdict == "partial" and c.get("correction") and _safe_correction(sent, c["correction"], c):
             fixed = _keep_markers(sent, c["correction"])
             paragraphs[c["paragraph"]] = para.replace(sent, fixed, 1)
             stats["corrected"] += 1
+            show("corrected", sent, fixed)
         elif verdict in {"unsupported", "contradicted"}:
             by_para.setdefault(c["paragraph"], []).append(c)
         elif verdict == "partial":
@@ -249,10 +252,12 @@ def ground(text: str, ws, evidence: str, *, deep: bool, max_claims: int = 45) ->
                 if len(sentences) > 2:
                     para = " ".join(s for s in sentences if s != c["sentence"])
                     stats["removed"] += 1
+                    show("removed", c["sentence"])
                 else:
                     flags.append({"sentence": c["sentence"][:220], "verdict": c["verdict"], "reason": c.get("reason", "not supported by the cited source")})
             else:
                 stats["corrected"] += 1
+                show("corrected", c["sentence"])
         paragraphs[pi] = para
 
     for c in claims:
@@ -291,13 +296,15 @@ def filter_segment(text: str, ws, *, key: str, title: str, section: str, purpose
         try:
             text, coherence_flags = coherence_pass(text, title=title, section=section, purpose=purpose, evidence=evidence, rules=rules)
             flags += coherence_flags
+            for f in coherence_flags if hasattr(ws, "edit") else []:
+                ws.edit(key, "rewritten", f["sentence"])
         except Exception as exc:  # noqa: BLE001
             flags.append({"sentence": "", "verdict": "skipped", "reason": f"coherence review failed: {exc}"})
     stats = {}
     if ws.index.chunks:
         if progress:
             progress(f"Hallucination filter · verifying claims in {section} against their sources")
-        text, stats, ground_flags = ground(text, ws, evidence, deep=deep)
+        text, stats, ground_flags = ground(text, ws, evidence, deep=deep, key=key)
         flags += ground_flags
     stats["sanitised"] = sum(1 for f in flags if f["verdict"] in {"duplicate", "truncated", "invalid_citation"})
     stats["paragraphs_repaired"] = sum(1 for f in flags if f["verdict"] == "repaired")

@@ -73,7 +73,7 @@ def render_in_text(text: str, p: Project, order: list[str]) -> str:
         return "(" + "; ".join(parts) + ")"
 
     out = MARKER.sub(repl, text)
-    return re.sub(r"\s+([.,;])", r"\1", out)
+    return re.sub(r"\s+([.,;])(?!\d)", r"\1", out)      # not before a digit: "p = .05" keeps its space
 
 
 def format_reference(src: Reference | WebSource, style: str, number: int | None = None) -> str:
@@ -81,6 +81,10 @@ def format_reference(src: Reference | WebSource, style: str, number: int | None 
     year = src.year or "n.d."
     title = src.title.strip().rstrip(".") or "Untitled"
     venue = src.venue.strip()
+    # volume, issue and pages exist only on sources completed from Crossref (see `details`); they follow the venue
+    volume, issue, pages = (str(getattr(src, k, "") or "") for k in ("volume", "issue", "pages"))
+    if venue and (volume or pages):
+        venue += (f", {volume}" + (f"({issue})" if issue else "") if volume else "") + (f", {pages}" if pages else "")
     doi = f"https://doi.org/{src.doi}" if src.doi else ""
     url = getattr(src, "url", "") or ""
     link = doi or url
@@ -142,3 +146,90 @@ def reference_list(p: Project, texts: list[str]) -> tuple[list[str], list[str]]:
         return [format_reference(labels[l], "IEEE", i) for i, l in enumerate(order, 1)], order
     entries = sorted((format_reference(labels[l], p.citation_style) for l in order), key=lambda s: s.lower().lstrip("“'\""))
     return entries, order
+
+
+# ---------------------------------------------------------------------------- BibTeX and RIS
+def _ascii(text: str) -> str:
+    import unicodedata
+    return re.sub(r"[^a-z0-9]", "", unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode().lower())
+
+
+def bib_keys(p: Project, labels: list[str]) -> dict[str, str]:
+    """label (R1, W3 …) -> citation key such as smith2021digital; unique within the project."""
+    sources = label_map(p)
+    keys: dict[str, str] = {}
+    for label in labels:
+        src = sources.get(label)
+        if src is None:
+            continue
+        who = _ascii(surname(src.authors[0])) if src.authors else ""
+        word = next((w for w in (_ascii(x) for x in src.title.split()) if len(w) > 3), "source")
+        base = (who or word) + (re.sub(r"\D", "", src.year)[:4] or "nd") + (word if who else "")
+        key, n = base, 1
+        while key in keys.values():
+            n += 1
+            key = base + chr(96 + n)       # smith2021digital, smith2021digitalb …
+        keys[label] = key
+    return keys
+
+
+def _bib_name(n: str) -> str:
+    n = n.strip()
+    if "," in n or " " not in n:
+        return n
+    parts = n.split()
+    return f"{parts[-1]}, {' '.join(parts[:-1])}"
+
+
+_BIB_ESCAPE = {"&": r"\&", "%": r"\%", "$": r"\$", "#": r"\#", "_": r"\_", "{": "", "}": "", "~": r"\textasciitilde{}", "^": "", "\\": ""}
+
+
+def _bib(text: str) -> str:
+    return "".join(_BIB_ESCAPE.get(ch, ch) for ch in str(text))
+
+
+def details(doi: str) -> dict:
+    """Volume, issue and pages of a work from Crossref, or {} when it cannot be reached. Best effort; never raises."""
+    import httpx
+
+    from .config import settings
+    try:
+        r = httpx.get(f"https://api.crossref.org/works/{doi}", params={"mailto": settings.contact_email}, timeout=6)
+        if r.status_code != 200:
+            return {}
+        m = r.json()["message"]
+        return {k: str(m[src]) for k, src in (("volume", "volume"), ("issue", "issue"), ("pages", "page")) if m.get(src)}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def bibtex(p: Project, labels: list[str], enrich: bool = False) -> str:
+    """The reference list as BibTeX. `enrich` completes sources that have a DOI with volume, issue and pages from Crossref."""
+    sources, keys, out = label_map(p), bib_keys(p, labels), []
+    for label, key in keys.items():
+        src = sources[label]
+        extra = details(src.doi) if enrich and src.doi else {}
+        url = getattr(src, "url", "") or ""
+        kind = "article" if src.venue and getattr(src, "source", "") not in {"web", "wikipedia"} else "online" if url else "misc"
+        fields = [("author", " and ".join(_bib_name(a) for a in src.authors if a.strip())), ("title", "{" + _bib(src.title.strip().rstrip(".")) + "}"),
+                  ("journal" if kind == "article" else "organization" if kind == "online" else "howpublished", _bib(src.venue)),
+                  ("year", re.sub(r"\D", "", src.year)[:4]), ("volume", extra.get("volume", "")), ("number", extra.get("issue", "")),
+                  ("pages", extra.get("pages", "").replace("-", "--").replace("----", "--")), ("doi", src.doi), ("url", "" if src.doi else url)]
+        body = ",\n".join(f"  {name} = {{{value if name in ('title', 'doi', 'url') else _bib(value)}}}" for name, value in fields if value)
+        out.append(f"@{kind}{{{key},\n{body}\n}}")
+    return "\n\n".join(out) + "\n"
+
+
+def ris(p: Project, labels: list[str]) -> str:
+    """The reference list in RIS, the format Zotero, Mendeley and EndNote import."""
+    sources, out = label_map(p), []
+    for label in labels:
+        src = sources.get(label)
+        if src is None:
+            continue
+        url = getattr(src, "url", "") or ""
+        lines = [("TY", "JOUR" if src.venue and getattr(src, "source", "") not in {"web", "wikipedia"} else "ELEC" if url else "GEN"),
+                 *[("AU", _bib_name(a)) for a in src.authors if a.strip()], ("TI", src.title.strip().rstrip(".")), ("JO", src.venue),
+                 ("PY", re.sub(r"\D", "", src.year)[:4]), ("DO", src.doi), ("UR", f"https://doi.org/{src.doi}" if src.doi else url), ("ER", "")]
+        out.append("\n".join(f"{tag}  - {value}" for tag, value in lines if value or tag == "ER"))
+    return "\n\n".join(out) + "\n"

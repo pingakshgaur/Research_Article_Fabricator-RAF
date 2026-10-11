@@ -182,7 +182,7 @@ a { color: var(--accent-text); }
 /* ====================================================================== shell */
 .shell {
   display: grid;
-  grid-template-columns: 248px 1fr;
+  grid-template-columns: var(--rail-w, 216px) minmax(0, 1fr);
   grid-template-rows: 64px 1fr;
   height: 100%;
 }
@@ -1027,10 +1027,6 @@ mark.flag.unsupported, mark.flag.contradicted { background: color-mix(in srgb, v
 
 .empty { text-align: center; padding: 60px 20px; color: var(--muted); }
 
-@media (max-width: 1360px) {
-  .shell { grid-template-columns: 200px 1fr; }
-  .rail-step .hint { display: none; }
-}
 
 @media (max-width: 1180px) {
   .studio { grid-template-columns: 200px minmax(0, 1fr); }
@@ -1394,3 +1390,320 @@ mark.flag.unsupported, mark.flag.contradicted { background: color-mix(in srgb, v
   .ambient-blob, .cursor-glow { animation: none; display: none; }
   .preview-panel { animation: none; }
 }
+
+/* ======================================================================
+   1.5 — Library, History, Revisions
+   ====================================================================== */
+.rail-sep { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }
+.rail-step .num svg { display: block; }
+
+/* ---- Library */
+.lib-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) 190px 190px; gap: 10px; margin-top: 28px; }
+.lib-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 130px 176px;
+  gap: 16px;
+  align-items: center;
+  padding: 16px 8px;
+  border-bottom: 1px solid var(--line);
+  transition: background 0.2s;
+}
+.lib-row:hover { background: var(--surface); }
+.lib-row.archived .lib-main { opacity: 0.6; }
+.lib-main { cursor: pointer; min-width: 0; }
+.lib-main .p-title { font-family: "Fraunces Variable", Georgia, serif; font-size: 19px; letter-spacing: -0.01em; }
+.lib-meta { display: flex; flex-wrap: wrap; gap: 4px 0; font-size: 12.5px; margin-top: 3px; }
+.lib-meta span:not(:last-child)::after { content: "·"; margin: 0 7px; }
+.lib-meter { max-width: 260px; margin-top: 8px; }
+.lib-side { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.lib-actions { display: flex; justify-content: flex-end; gap: 2px; opacity: 0.55; transition: opacity 0.2s; }
+.lib-row:hover .lib-actions, .lib-actions:focus-within { opacity: 1; }
+
+/* ---- History */
+.timeline section { margin-bottom: 22px; }
+.tl-day {
+  font-family: "Geist Mono Variable", monospace; font-size: 11px; font-weight: 500; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--muted); margin: 0 0 6px; padding-bottom: 8px; border-bottom: 1px solid var(--line);
+}
+.tl-item { display: grid; grid-template-columns: 46px 26px minmax(0, 1fr); gap: 10px; align-items: start; padding: 9px 4px; border-bottom: 1px dashed var(--line); }
+.tl-item:last-child { border-bottom: 0; }
+.tl-time { font-size: 11.5px; color: var(--muted); padding-top: 3px; }
+.tl-icon { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; background: var(--surface-2); color: var(--ink-2); }
+.tl-item.raf .tl-icon { background: var(--accent-soft); color: var(--accent-text); }
+.tl-summary { font-size: 14px; line-height: 1.45; overflow-wrap: anywhere; }
+.tl-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 12px; margin-top: 4px; }
+.tl-meta .badge { font-size: 10px; padding: 2px 7px; }
+
+/* ---- Revisions */
+.rev-grid { display: grid; grid-template-columns: 330px minmax(0, 1fr); gap: 22px; align-items: start; margin-top: 22px; }
+.rev-item { padding: 12px 14px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); transition: border-color 0.2s; }
+.rev-item.on { border-color: var(--accent); }
+.rev-name { font-weight: 560; overflow-wrap: anywhere; }
+.diff-seg { border-top: 1px solid var(--line); padding: 4px 0; }
+.diff-head {
+  width: 100%; display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 4px;
+  background: none; border: 0; color: inherit; font: inherit; font-size: 14px; text-align: left; cursor: pointer;
+}
+.diff-head:disabled { cursor: default; }
+.diff-seg.same .diff-head b { font-weight: 450; color: var(--muted); }
+.diff-text { white-space: pre-wrap; font-size: 15px; line-height: 1.75; padding: 6px 4px 14px; max-height: 520px; overflow-y: auto; overflow-wrap: anywhere; }
+.diff-text ins { text-decoration: underline; text-decoration-thickness: 1.5px; text-underline-offset: 3px; color: var(--ok); background: color-mix(in srgb, var(--ok) 14%, transparent); border-radius: 3px; padding: 0 2px; }
+.diff-text del { text-decoration: line-through; color: var(--bad); background: color-mix(in srgb, var(--bad) 12%, transparent); border-radius: 3px; padding: 0 2px; }
+.point { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 12px; padding: 16px 0; border-top: 1px solid var(--line); margin-top: 14px; }
+.point + .point { margin-top: 0; }
+.point.skip blockquote { opacity: 0.5; }
+.point-n { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; background: var(--accent-soft); color: var(--accent-text); }
+.point.skip .point-n { background: var(--surface-2); color: var(--muted); }
+.point blockquote { margin: 0; padding-left: 12px; border-left: 2px solid var(--line-strong); font-size: 14px; line-height: 1.55; overflow-wrap: anywhere; }
+
+@media (max-width: 1100px) {
+  .rev-grid { grid-template-columns: 1fr; }
+  .lib-toolbar { grid-template-columns: 1fr 1fr; }
+  .lib-toolbar > :first-child { grid-column: 1 / -1; }
+  .lib-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .lib-actions { grid-column: 1 / -1; justify-content: flex-start; opacity: 1; }
+}
+
+/* ======================================================================
+   1.5 — Themes
+   A theme is a ten-colour ramp. Each one names seven colours taken from its ramp; every other colour of the interface
+   is mixed from those by the two shared blocks below, so all themes get the same structure in dark and light mode.
+   Contrast of every text / background pair was checked at WCAG AA (.scratch/theme_check.py mirrors these formulas).
+
+     --p-a      accent in dark mode            --p-a-ink / --p-a-far   text on it / the opposite end, for hover and pressed
+     --p-b      highlight in dark mode         --p-tint                colour the dark backgrounds lean toward
+     --p-l      accent in light mode           --p-l-ink / --p-l-far   as above, for light mode
+     --p-lb     highlight in light mode        --ramp                  the whole ramp, used for a few signature strokes
+   The original theme ("violet") keeps its hand-tuned colours at the top of this file.
+   ====================================================================== */
+[data-palette="rosewood"] {
+  --p-a: #aa5378; --p-a-ink: #ffffff; --p-a-far: #000000; --p-b: #d0de9b; --p-tint: #aa5378;
+  --p-l: #d89b6d; --p-l-ink: #1a1208; --p-l-far: #ffffff; --p-lb: #aa5378;
+  --ramp: linear-gradient(90deg, #aa5378, #ba5e73, #c66b6f, #cf7a6c, #d58a6b, #d89b6d, #d8ac72, #d7bd7c, #d4ce8a, #d0de9b);
+}
+[data-palette="aurora"] {
+  --p-a: #6580ff; --p-a-ink: #050b24; --p-a-far: #ffffff; --p-b: #00d4b1; --p-tint: #6580ff;
+  --p-l: #00c6f3; --p-l-ink: #04202a; --p-l-far: #ffffff; --p-lb: #b35ef4;
+  --ramp: linear-gradient(90deg, #e029c6, #b35ef4, #6580ff, #009aff, #00adff, #00bbff, #00c6f3, #00ced2, #00d4b1, #46d895);
+}
+[data-palette="solar"] {
+  --p-a: #e10069; --p-a-ink: #ffffff; --p-a-far: #000000; --p-b: #ffa700; --p-tint: #200299;
+  --p-l: #ffa700; --p-l-ink: #231400; --p-l-far: #ffffff; --p-lb: #b8007f;
+  --ramp: linear-gradient(90deg, #200299, #800090, #b8007f, #e10069, #fd0051, #ff4437, #ff7a12, #ffa700, #ffd200, #e8f921);
+}
+[data-palette="ember"] {
+  --p-a: #ba2e4e; --p-a-ink: #ffffff; --p-a-far: #000000; --p-b: #cd6430; --p-tint: #2b2173;
+  --p-l: #cd6430; --p-l-ink: #1c0c03; --p-l-far: #ffffff; --p-lb: #6e196f;
+  --ramp: linear-gradient(90deg, #cd6430, #ca513a, #c43f44, #ba2e4e, #ac2058, #9b1762, #861569, #6e196f, #511e73, #2b2173);
+}
+
+/* ---- dark mode of every ramp theme */
+[data-palette]:not([data-palette="violet"]):not([data-theme="light"]) {
+  --violet: var(--p-a);
+  --violet-1: color-mix(in srgb, var(--p-a) 24%, #000);
+  --violet-2: color-mix(in srgb, var(--p-a) 48%, #000);
+  --violet-3: color-mix(in srgb, var(--p-a) 80%, #000);
+  --violet-4: color-mix(in srgb, var(--p-a) 76%, #fff);
+  --violet-5: color-mix(in srgb, var(--p-a) 50%, #fff);
+  --violet-6: color-mix(in srgb, var(--p-a) 22%, #fff);
+  --p-ground: color-mix(in srgb, var(--p-tint) 55%, #6f6f78);
+  --black: color-mix(in srgb, var(--p-ground) 3%, #000);
+  --black-1: color-mix(in srgb, var(--p-ground) 6%, #000);
+  --black-2: color-mix(in srgb, var(--p-ground) 9%, #000);
+  --black-3: color-mix(in srgb, var(--p-ground) 13%, #000);
+  --black-4: color-mix(in srgb, var(--p-ground) 19%, #000);
+  --black-5: color-mix(in srgb, var(--p-ground) 28%, #000);
+  --black-6: color-mix(in srgb, var(--p-ground) 40%, #000);
+
+  --line: color-mix(in srgb, var(--violet-5) 13%, transparent);
+  --line-strong: color-mix(in srgb, var(--violet-5) 28%, transparent);
+  --ink: color-mix(in srgb, var(--p-a) 6%, #fff);
+  --ink-2: color-mix(in srgb, var(--p-a) 14%, #d2d0d6);
+  --muted: color-mix(in srgb, var(--p-a) 22%, #8f8d96);
+  --accent-hover: color-mix(in srgb, var(--p-a) 90%, var(--p-a-far));
+  --accent-press: color-mix(in srgb, var(--p-a) 80%, var(--p-a-far));
+  --accent-ink: var(--p-a-ink);
+  --accent-soft: color-mix(in srgb, var(--p-a) 16%, transparent);
+  --accent-softer: color-mix(in srgb, var(--p-a) 8%, transparent);
+  --glow: color-mix(in srgb, var(--p-a) 50%, transparent);
+  --accent-2: var(--p-b);
+  --accent-2-soft: color-mix(in srgb, var(--p-b) 14%, transparent);
+  --shine: color-mix(in srgb, var(--violet-5) 16%, transparent);
+  --shine-edge: color-mix(in srgb, var(--violet-5) 55%, transparent);
+  --ambient-a: color-mix(in srgb, var(--p-a) 24%, transparent);
+  --ambient-b: color-mix(in srgb, var(--p-b) 6%, transparent);
+  --cursor-glow: color-mix(in srgb, var(--p-a) 13%, transparent);
+  --grid-dot: color-mix(in srgb, var(--violet-5) 9%, transparent);
+  --glass: color-mix(in srgb, var(--black-3) 62%, transparent);
+  --glass-line: color-mix(in srgb, var(--violet-5) 22%, transparent);
+  --glass-hover: color-mix(in srgb, var(--p-a) 34%, transparent);
+  --glass-hover-ink: var(--ink);
+  --shadow-float: 0 30px 80px -30px rgba(0, 0, 0, 0.85), 0 0 0 1px color-mix(in srgb, var(--violet-5) 8%, transparent);
+  --paper: color-mix(in srgb, var(--p-ground) 5%, #000);
+  --paper-ink: color-mix(in srgb, var(--p-a) 8%, #ececf0);
+}
+
+/* ---- light mode of every ramp theme */
+[data-palette]:not([data-palette="violet"])[data-theme="light"] {
+  --lime: var(--p-l);
+  --lime-1: color-mix(in srgb, var(--p-l) 13%, #fff);
+  --lime-2: color-mix(in srgb, var(--p-l) 32%, #fff);
+  --lime-3: color-mix(in srgb, var(--p-l) 84%, #fff);
+  --lime-4: color-mix(in srgb, var(--p-l) 80%, #000);
+  --lime-5: color-mix(in srgb, var(--p-l) 48%, #000);
+  --lime-6: color-mix(in srgb, var(--p-l) 28%, #000);
+  --p-ground: color-mix(in srgb, var(--p-l) 40%, #55524c);
+  --white: #ffffff;
+  --white-1: color-mix(in srgb, var(--p-ground) 3%, #fff);
+  --white-2: color-mix(in srgb, var(--p-ground) 9%, #fff);
+  --white-3: color-mix(in srgb, var(--p-ground) 15%, #fff);
+  --white-4: color-mix(in srgb, var(--p-ground) 24%, #fff);
+  --white-5: color-mix(in srgb, var(--p-ground) 46%, #fff);
+  --white-6: color-mix(in srgb, var(--p-ground) 72%, #fff);
+
+  --bg: color-mix(in srgb, var(--p-ground) 7%, #fff);
+  --line: color-mix(in srgb, var(--lime-6) 13%, transparent);
+  --line-strong: color-mix(in srgb, var(--lime-6) 26%, transparent);
+  --ink: color-mix(in srgb, var(--p-l) 8%, #121212);
+  --ink-2: color-mix(in srgb, var(--lime-6) 45%, #3a3a3a);
+  --muted: color-mix(in srgb, var(--lime-6) 30%, #6e6e6e);
+  --accent-hover: color-mix(in srgb, var(--p-l) 84%, var(--p-l-far));
+  --accent-press: color-mix(in srgb, var(--p-l) 72%, var(--p-l-far));
+  --accent-ink: var(--p-l-ink);
+  --accent-soft: color-mix(in srgb, var(--p-l) 30%, transparent);
+  --accent-softer: color-mix(in srgb, var(--p-l) 14%, transparent);
+  --glow: color-mix(in srgb, var(--lime-4) 50%, transparent);
+  --accent-2: var(--p-lb);
+  --accent-2-soft: color-mix(in srgb, var(--p-lb) 10%, transparent);
+  --shine: color-mix(in srgb, var(--p-l) 22%, transparent);
+  --shine-edge: color-mix(in srgb, var(--lime-4) 70%, transparent);
+  --ambient-a: color-mix(in srgb, var(--p-l) 34%, transparent);
+  --ambient-b: color-mix(in srgb, var(--p-lb) 8%, transparent);
+  --cursor-glow: color-mix(in srgb, var(--p-l) 24%, transparent);
+  --grid-dot: color-mix(in srgb, var(--lime-6) 10%, transparent);
+  --glass: color-mix(in srgb, var(--white-1) 66%, transparent);
+  --glass-line: color-mix(in srgb, var(--lime-6) 16%, transparent);
+  --glass-hover: color-mix(in srgb, var(--p-l) 55%, transparent);
+  --glass-hover-ink: var(--ink);
+  --shadow-float: 0 30px 80px -34px color-mix(in srgb, var(--lime-6) 45%, transparent), 0 0 0 1px color-mix(in srgb, var(--lime-6) 6%, transparent);
+  --paper: color-mix(in srgb, var(--p-ground) 2%, #fff);
+  --paper-ink: color-mix(in srgb, var(--p-l) 6%, #1a1a1a);
+}
+
+/* the ramp itself appears where the interface draws a signature stroke */
+[data-palette]:not([data-palette="violet"]) .brand-mark::after,
+[data-palette]:not([data-palette="violet"]) .display em::after,
+[data-palette]:not([data-palette="violet"]) .eta-bar i { background: var(--ramp); opacity: 1; }
+
+/* "Background effects" switched off in Settings: no ambient light, grain or cursor glow */
+[data-effects="off"] .ambient, [data-effects="off"] body::after { display: none; }
+
+/* ======================================================================
+   1.5 — Settings page
+   ====================================================================== */
+.settings-tabs { margin: 26px 0 20px; }
+.settings-panel { display: flex; flex-direction: column; gap: 16px; }
+.settings-panel h5 { margin: 0 0 12px; font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); display: flex; gap: 8px; align-items: center; }
+.settings-panel .card::after { display: none; }
+.settings-foot { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 4px; }
+.lock-note { display: flex; gap: 12px; align-items: center; padding: 12px 16px; border-radius: 14px; border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+  background: color-mix(in srgb, var(--warn) 10%, transparent); font-size: 13.5px; margin-bottom: 16px; }
+.lock-note form { display: flex; gap: 8px; margin-left: auto; }
+.lock-note .input { width: 190px; height: 34px; }
+
+.theme-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; }
+.theme-card {
+  display: flex; flex-direction: column; gap: 10px; padding: 12px; border-radius: 16px; border: 1px solid var(--line); background: var(--surface);
+  color: inherit; font: inherit; text-align: left; cursor: pointer; transition: border-color 0.2s, transform 0.2s;
+}
+.theme-card:hover:not(:disabled) { border-color: var(--line-strong); transform: translateY(-1px); }
+.theme-card:disabled { cursor: not-allowed; opacity: 0.6; }
+.theme-card.on { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.theme-ramp { height: 46px; border-radius: 10px; }
+.theme-chips { display: flex; gap: 6px; }
+.theme-chips i { flex: 1; height: 18px; border-radius: 6px; border: 1px solid rgba(128, 128, 128, 0.25); }
+.theme-card b { font-weight: 560; }
+.theme-card span { font-size: 12px; color: var(--muted); }
+.about-grid { display: grid; grid-template-columns: 170px minmax(0, 1fr); gap: 8px 16px; font-size: 13.5px; }
+.about-grid dt { color: var(--muted); }
+.about-grid dd { margin: 0; overflow-wrap: anywhere; }
+
+/* ======================================================================
+   1.6 — Sidebar: no captions, bold rules between the groups, width set by dragging its edge
+   ====================================================================== */
+.rail { position: relative; gap: 2px; padding: 16px 12px; overflow-x: hidden; }
+.rail-step { grid-template-columns: 30px minmax(0, 1fr); padding: 9px 10px; }
+.rail-step .label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rail-rule { flex: none; height: 2px; margin: 9px 6px; border-radius: 2px; background: var(--line-strong); }
+.rail-resize { position: absolute; top: 0; right: -3px; bottom: 0; width: 9px; cursor: col-resize; z-index: 3; touch-action: none; }
+.rail-resize::after { content: ""; position: absolute; top: 0; bottom: 0; left: 3px; width: 2px; background: var(--accent); opacity: 0; transition: opacity 0.15s; }
+.rail-resize:hover::after, .rail-resize:focus-visible::after, body.resizing .rail-resize::after { opacity: 1; }
+.rail-resize:focus-visible { outline: none; }
+body.resizing { cursor: col-resize; user-select: none; }
+body.resizing .main { pointer-events: none; }
+.rail-step.active::before { left: -12px; top: 9px; bottom: 9px; }
+/* narrow enough that labels no longer fit: numbers and icons only */
+.rail.compact { padding-inline: 8px; }
+.rail.compact .rail-step { grid-template-columns: 1fr; justify-items: center; padding-inline: 4px; }
+.rail.compact .rail-step .label { display: none; }
+.rail.compact .rail-step.active::before { left: -8px; }
+
+/* ---- Custom theme: the floating colour button and its panel (Settings → Appearance) */
+.rgb-fab {
+  position: fixed; right: 28px; bottom: 28px; z-index: 50; width: 58px; height: 58px; border-radius: 50%; border: 0; padding: 4px; cursor: pointer;
+  background: conic-gradient(#ff3b30, #ff9500, #ffcc00, #34c759, #00c7be, #007aff, #af52de, #ff2d55, #ff3b30);
+  box-shadow: 0 12px 34px -10px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.12) inset; transition: transform 0.2s;
+}
+.rgb-fab:hover:not(:disabled) { transform: scale(1.07) rotate(18deg); }
+.rgb-fab:disabled { cursor: not-allowed; filter: grayscale(0.8); opacity: 0.6; }
+.rgb-fab i { display: block; width: 100%; height: 100%; border-radius: 50%; border: 3px solid var(--bg); }
+.rgb-pop {
+  position: fixed; right: 28px; bottom: 98px; z-index: 51; width: 318px; max-height: calc(100vh - 120px); overflow-y: auto; padding: 16px; border-radius: 18px; border: 1px solid var(--glass-line);
+  background: var(--surface); box-shadow: var(--shadow-float); display: flex; flex-direction: column; gap: 12px; animation: fade 0.2s ease both;
+}
+.rgb-pop h5 { margin: 0; font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); }
+.rgb-well { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 12px; align-items: stretch; }
+.rgb-well input[type="color"] { width: 74px; height: 74px; padding: 0; border: 1px solid var(--line-strong); border-radius: 14px; background: none; cursor: pointer; }
+.rgb-well input[type="color"]::-webkit-color-swatch-wrapper { padding: 3px; }
+.rgb-well input[type="color"]::-webkit-color-swatch { border: 0; border-radius: 10px; }
+.rgb-row { display: grid; grid-template-columns: 14px minmax(0, 1fr) 46px; gap: 8px; align-items: center; font-family: "Geist Mono Variable", monospace; font-size: 12px; }
+.rgb-row input[type="number"] { height: 26px; padding: 0 6px; font-size: 12px; }
+.rgb-made { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.rgb-made div { height: 40px; border-radius: 9px; display: grid; place-items: center; font-size: 10.5px; font-weight: 600; border: 1px solid rgba(128, 128, 128, 0.25); }
+.rgb-made span { grid-column: span 1; font-size: 10.5px; color: var(--muted); text-align: center; }
+
+/* ======================================================================
+   1.6 — Article structure drawer
+   ====================================================================== */
+.struct-drawer { width: min(620px, 100vw); }
+.struct-row {
+  display: grid; grid-template-columns: 18px minmax(0, 1fr) auto 38px; gap: 10px; align-items: center; padding: 9px 6px;
+  border-top: 1px solid var(--line); border-radius: 10px; transition: background 0.15s, opacity 0.2s;
+}
+.struct-row:first-of-type { border-top: 0; }
+.struct-row[draggable="true"] { cursor: grab; }
+.struct-row.over { background: var(--accent-softer); box-shadow: inset 0 2px 0 var(--accent); }
+.struct-row.out > :nth-child(2) { opacity: 0.5; }
+.struct-grip { color: var(--muted); font-size: 13px; letter-spacing: -2px; user-select: none; }
+.struct-title { display: inline-flex; align-items: center; gap: 7px; max-width: 100%; padding: 0; background: none; border: 0; color: inherit; font: inherit; text-align: left; cursor: text; }
+.struct-title b { font-weight: 560; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.struct-title svg { opacity: 0; color: var(--muted); flex: none; transition: opacity 0.15s; }
+.struct-row:hover .struct-title svg, .struct-title:focus-visible svg { opacity: 1; }
+.struct-meta { display: flex; flex-wrap: wrap; gap: 2px 0; font-size: 11.5px; margin-top: 2px; }
+.struct-meta > :not(:last-child)::after { content: "·"; margin: 0 6px; color: var(--muted); }
+.link { padding: 0; background: none; border: 0; font: inherit; color: var(--accent-text); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.link:disabled { color: var(--muted); cursor: not-allowed; text-decoration: none; }
+.btn.down svg { transform: none; }
+.struct-row .btn.icon:not(.down):not(.danger) svg { transform: rotate(180deg); }
+.struct-in { position: relative; display: inline-flex; cursor: pointer; }
+.struct-in input { position: absolute; opacity: 0; inset: 0; cursor: pointer; }
+.struct-in .track { width: 34px; height: 20px; border-radius: 999px; background: var(--surface-3); border: 1px solid var(--line-strong); position: relative; transition: background 0.2s; }
+.struct-in .track::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--muted); transition: transform 0.2s, background 0.2s; }
+.struct-in input:checked + .track { background: var(--accent); border-color: transparent; }
+.struct-in input:checked + .track::after { transform: translateX(14px); background: var(--accent-ink); }
+.struct-in input:focus-visible + .track { box-shadow: 0 0 0 3px var(--accent-soft); }
+.part { display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 8px; align-items: start; }
+.part .input { height: 34px; }
+.seg-nav button.left-out > span:first-child { opacity: 0.5; text-decoration: line-through; }
+.seg-nav .seg-structure { margin-top: 10px; border-top: 2px solid var(--line-strong); border-radius: 0 0 12px 12px; color: var(--accent-text); }
+@media (max-width: 700px) { .part { grid-template-columns: 1fr; } }

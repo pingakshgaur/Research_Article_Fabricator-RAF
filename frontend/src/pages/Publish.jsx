@@ -1,9 +1,74 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api.js";
-import { Button, Icon, Spinner, useToast } from "../ui.jsx";
+import { Button, Icon, Segmented, Spinner, useToast } from "../ui.jsx";
+import StructureEditor from "../StructureEditor.jsx";
 import TemplatePreview from "../TemplatePreview.jsx";
 
 /** Miniature page illustrating each template's structure. */
+const VERDICT = (score) => (score >= 75 ? "ok" : score >= 50 ? "warn" : "bad");
+
+/** For an article brought in with "Format an existing article": checks that only run when asked for. */
+function FormatChecks({ project, setProject }) {
+  const toast = useToast();
+  const [report, setReport] = useState(null);
+  const [working, setWorking] = useState("");
+  const [target, setTarget] = useState(["APA", "Harvard", "Chicago"].find((s) => s !== project.citation_style) || "APA");
+  const run = async (name, fn) => {
+    setWorking(name);
+    try { await fn(); } catch (err) { toast(err.message, "error"); } finally { setWorking(""); }
+  };
+  const refs = report?.references;
+  return (
+    <div className="card rise" style={{ marginTop: 12 }}>
+      <div className="row between wrap">
+        <div style={{ maxWidth: 520 }}>
+          <div style={{ fontWeight: 580 }}>Checks</div>
+          <div className="muted" style={{ fontSize: 13 }}>Compares the citations in the text with the reference list, and reports on the writing style of each section. Nothing is changed.</div>
+        </div>
+        <Button icon={working === "checks" ? undefined : "shield"} disabled={!!working} onClick={() => run("checks", async () => setReport(await api.formatChecks(project.id)))}>
+          {working === "checks" && <Spinner size={13} />}{report ? "Run again" : "Run the checks"}
+        </Button>
+      </div>
+      {report && (
+        <div style={{ marginTop: 14 }}>
+          <div className="metric"><span>Reference list</span><span>{refs.references} entries · {refs.style}</span></div>
+          <div className="metric"><span>Cited in the text but not in the list</span><span style={{ color: refs.missing.length ? "var(--warn)" : "var(--ok)" }}>{refs.missing.length}</span></div>
+          {refs.missing.length > 0 && <p className="muted" style={{ fontSize: 12.5, margin: "4px 0 8px" }}>{refs.missing.join(" · ")}</p>}
+          <div className="metric"><span>In the list but never cited</span><span style={{ color: refs.uncited.length ? "var(--warn)" : "var(--ok)" }}>{refs.uncited.length}</span></div>
+          {refs.uncited.map((u) => <p key={u} className="muted" style={{ fontSize: 12.5, margin: "4px 0" }}>{u}</p>)}
+          {report.style.length > 0 && <div style={{ fontWeight: 580, margin: "14px 0 4px" }}>Writing style by section</div>}
+          {report.style.map((s) => (
+            <div key={s.key} style={{ padding: "6px 0", borderTop: "1px dashed var(--line)" }}>
+              <div className="row between"><span>{s.title}</span><span className={`badge ${VERDICT(s.score)}`}>{s.score} / 100</span></div>
+              {s.issues.map((issue) => <div key={issue} className="muted" style={{ fontSize: 12.5 }}>{issue}</div>)}
+            </div>
+          ))}
+          <p className="muted" style={{ fontSize: 12, marginBottom: 0 }}>The citation check reads author–date and numbered citations by pattern, so treat it as a list to look through, not a verdict.</p>
+        </div>
+      )}
+      {project.segments.references && (
+        <div className="row between wrap" style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid var(--line)" }}>
+          <div style={{ maxWidth: 480 }}>
+            <div style={{ fontWeight: 580 }}>Restyle the reference list <span className="badge warn">experimental</span></div>
+            <div className="muted" style={{ fontSize: 13 }}>
+              Looks each entry up in Crossref (this goes online) and re-formats the ones it can identify. The rest stay exactly as they are. Citations in the text are not changed.
+            </div>
+          </div>
+          <div className="row">
+            <Segmented value={target} onChange={setTarget} options={["APA", "Harvard", "Chicago"].map((v) => ({ value: v, label: v }))} />
+            <Button disabled={!!working} onClick={() => confirm(`Look up ${project.segments.references.content.split("\n").filter(Boolean).length} references in Crossref and restyle them to ${target}?`) &&
+              run("restyle", async () => {
+                const out = await api.restyleReferences(project.id, target);
+                setProject(out.project);
+                toast(out.restyled ? `${out.restyled} of ${out.total} entries restyled to ${target}; ${out.unchanged.length} left as they were` : "No entry could be identified; the list is unchanged", out.restyled ? "info" : "error");
+              })}>{working === "restyle" ? "Looking up…" : "Restyle"}</Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TemplateThumb({ t, accent, fill }) {
   const lines = (n, w = "100%") => Array.from({ length: n }, (_, i) => <i key={i} style={{ width: i === n - 1 ? "62%" : w }} />);
   const center = t.key !== "modern_report" && t.key !== "minimal_monograph";
@@ -31,17 +96,20 @@ function TemplateThumb({ t, accent, fill }) {
 const FORMATS = [
   { fmt: "pdf", title: "PDF document", desc: "Print-ready A4 with cover block, contents, running header, page numbers, tables and figures." },
   { fmt: "docx", title: "Word document", desc: "Fully editable DOCX with real heading styles, live table of contents and styled tables." },
+  { fmt: "tex", title: "LaTeX", desc: "A .zip with main.tex, references.bib and the figures. Real citation commands; opens in Overleaf as it is." },
   { fmt: "md", title: "Markdown", desc: "Plain-text source with embedded figures, ideal for Git, Obsidian or conversion." },
 ];
 
-const ORDER = ["title", "abstract", "keywords", "introduction", "literature_review", "methodology", "results", "discussion", "conclusion", "limitations", "references", "appendices"];
-
-export default function Publish({ project, setProject, navigate }) {
+export default function Publish({ project, setProject, navigate, health }) {
   const toast = useToast();
   const [working, setWorking] = useState("");
   const importRef = useRef(null);
-  const keys = ORDER.filter((k) => project.segments[k]);
-  const pending = keys.filter((k) => project.segments[k].status !== "approved");
+  // the article as arranged by the author; segments left out do not have to be approved, nor does an empty one they write themselves
+  const rows = project.structure.filter((r) => project.segments[r.key]);
+  const keys = rows.map((r) => r.key);
+  const inDocument = rows.filter((r) => r.included && (r.written || r.kind !== "manual"));
+  const pending = inDocument.filter((r) => project.segments[r.key].status !== "approved").map((r) => r.key);
+  const [arranging, setArranging] = useState(false);
   const ready = pending.length === 0;
 
   const [catalogue, setCatalogue] = useState(null);
@@ -62,7 +130,7 @@ export default function Publish({ project, setProject, navigate }) {
     setWorking(fmt + (draft ? "-draft" : ""));
     try {
       await api.download(project.id, fmt, draft, fmt === "md" ? null : style);
-      toast(`${fmt.toUpperCase()} ${draft ? "preview" : "published"}`);
+      toast(["bib", "ris"].includes(fmt) ? `Reference list saved as ${fmt.toUpperCase()}` : `${fmt === "tex" ? "LaTeX" : fmt.toUpperCase()} ${draft ? "preview" : "published"}`);
       if (!draft) setProject(await api.project(project.id));
     } catch (err) {
       toast(err.message, "error");
@@ -159,6 +227,24 @@ export default function Publish({ project, setProject, navigate }) {
             </div>
           ))}
 
+          {project.mode === "format" ? <FormatChecks project={project} setProject={setProject} /> : project.references.length > 0 && (
+            <div className="card rise" style={{ "--i": 6 }}>
+              <div className="row between wrap">
+                <div>
+                  <div style={{ fontWeight: 580 }}>Reference list on its own</div>
+                  <div className="muted" style={{ fontSize: 13 }}>For Zotero, Mendeley, EndNote or your own .bib file. Does not need approval.</div>
+                </div>
+                <div className="row">
+                  {[["bib", "BibTeX"], ["ris", "RIS"]].map(([fmt, label]) => (
+                    <Button key={fmt} icon={working === `${fmt}-draft` ? undefined : "download"} disabled={!!working} onClick={() => download(fmt, true)}>
+                      {working === `${fmt}-draft` && <Spinner size={13} />}{label}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
           <div className="card rise" style={{ "--i": 7 }}>
             <div className="row between wrap">
               <div>
@@ -174,20 +260,23 @@ export default function Publish({ project, setProject, navigate }) {
         <div className="card checklist rise" style={{ "--i": 4 }}>
           <div className="row between" style={{ marginBottom: 6 }}>
             <b>Article structure</b>
-            <span className="mono muted" style={{ fontSize: 12 }}>{keys.length - pending.length}/{keys.length}</span>
+            <span className="mono muted" style={{ fontSize: 12 }}>{inDocument.length - pending.length}/{inDocument.length}</span>
           </div>
-          {keys.map((k) => {
-            const s = project.segments[k];
+          {rows.map((r) => {
+            const s = project.segments[r.key];
             return (
-              <div key={k} className="item">
-                <span className={`status-dot ${s.status}`} />
+              <div key={r.key} className="item" style={r.included ? undefined : { opacity: 0.55 }}>
+                <span className={`status-dot ${r.included ? s.status : "pending"}`} />
                 <span style={{ flex: 1 }}>{s.title}</span>
-                {s.status === "approved" ? <span className="badge ok">approved</span> : (
-                  <Button size="sm" variant="soft" onClick={() => navigate(project.id, "studio")}>Review</Button>
-                )}
+                {!r.included ? <span className="badge">left out</span> : s.status === "approved" ? <span className="badge ok">approved</span>
+                  : !r.written && r.kind === "manual" ? <span className="badge">empty</span> : (
+                    <Button size="sm" variant="soft" onClick={() => navigate(project.id, "studio")}>Review</Button>
+                  )}
               </div>
             );
           })}
+          <Button size="sm" icon="edit" style={{ marginTop: 12 }} onClick={() => setArranging(true)}>Arrange, rename or leave out</Button>
+          <StructureEditor project={project} setProject={setProject} health={health} open={arranging} onClose={() => setArranging(false)} />
         </div>
       </div>
     </div>

@@ -7,6 +7,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from .config import settings
+
 
 def _id() -> str:
     return uuid.uuid4().hex[:12]
@@ -41,6 +43,10 @@ class WebSource(BaseModel):
     venue: str = ""
     doi: str = ""
     abstract: str = ""
+    oa_url: str = ""          # where an open-access copy of the full paper can be downloaded, when a database says so
+    fulltext: bool = False    # RAF downloaded and read the whole paper (index/web_<id>.txt); otherwise title and abstract only
+    chars: int = 0
+    pinned: bool = False      # the author marked it as one that must be used
 
 
 class Figure(BaseModel):
@@ -97,6 +103,18 @@ class Segment(BaseModel):
     error: str = ""
 
 
+class CustomSegment(BaseModel):
+    """A segment the author added to one project (see structure.py)."""
+    key: str
+    title: str
+    purpose: str = ""                 # what the segment should do, in the author's words
+    kind: Literal["generated", "manual"] = "generated"   # written by RAF from the purpose, or written by the author
+    words: int = 400
+    cites: bool = True                # draw on the sources and cite them
+    numbered: bool = True             # gets a section number in the published article
+    moves: list[dict] = []            # parts of the segment: {name, instruction, queries, share}; empty = RAF's default three
+
+
 class AnalysisResult(BaseModel):
     datasets: list[dict] = []           # provenance of each dataset used
     findings: list[str] = []            # plain-language, number-bearing statements
@@ -106,6 +124,7 @@ class AnalysisResult(BaseModel):
 
 
 class Project(BaseModel):
+    schema_version: int = 5                       # layout of this file; older projects are upgraded on load (store.py)
     id: str = Field(default_factory=_id)
     created: float = Field(default_factory=time.time)
     updated: float = Field(default_factory=time.time)
@@ -123,11 +142,19 @@ class Project(BaseModel):
     selected: list[str] = []
     segments: dict[str, Segment] = {}
     analysis: AnalysisResult | None = None
-    options: dict = Field(default_factory=lambda: {"web_research": True, "data_analysis": True})
+    options: dict = Field(default_factory=lambda: {"web_research": settings.web_research, "data_analysis": True})
     segment_lengths: dict[str, int] = {}          # user-chosen word targets per segment
+    titles: dict[str, str] = {}                   # the author's own titles for built-in segments
+    custom_segments: dict[str, CustomSegment] = {}
+    order: list[str] = []                         # reading order of the body, as arranged by the author (empty = usual order)
+    excluded: list[str] = []                      # segments kept in the project but left out of the document
     tone: dict = Field(default_factory=lambda: {"name": "academic", "intensity": 50})
     publish_style: dict = Field(default_factory=lambda: {"template": "modern_report", "palette": "violet"})
     review: dict = {}                             # article-level consistency review
+    archived: bool = False                        # hidden from the default Library view
+    # where the evidence comes from: the author's files (10–20), files topped up by research (1+), or research alone (none)
+    source_mode: Literal["references", "mixed", "research"] = "references"
+    mode: Literal["write", "format"] = "write"    # "format": an existing article brought in only to be typeset (formatter.py)
     run: "RunInfo" = Field(default_factory=lambda: RunInfo())
     stage: Literal["setup", "references", "segments", "processing", "studio", "published"] = "setup"
     log: list[dict] = []
@@ -135,7 +162,7 @@ class Project(BaseModel):
 
 class RunInfo(BaseModel):
     """Fabrication timer. Time accumulates across resumed sessions."""
-    status: Literal["idle", "running", "stopped", "completed"] = "idle"
+    status: Literal["idle", "running", "stopped", "review", "completed"] = "idle"   # "review": paused for the author to approve the reading list
     first_started: float | None = None
     session_started: float | None = None
     elapsed_before: float = 0.0                   # seconds from earlier sessions of this run
@@ -172,6 +199,7 @@ class GenerateRequest(BaseModel):
     tone: dict | None = None
     hallucination_filter: bool = True
     style_pass: bool = True
+    sources_confirmed: bool = False               # the author approved the reading list found by online research (Mixed / Research-only)
 
 
 class LengthsUpdate(BaseModel):

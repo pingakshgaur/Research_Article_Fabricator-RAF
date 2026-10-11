@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api.js";
 import { AmbientLight, Icon } from "./ui.jsx";
-import DevTools from "./DevTools.jsx";
+import { applyAppearance, applyMode, currentMode } from "./theme.js";
 import Home from "./pages/Home.jsx";
 import Setup from "./pages/Setup.jsx";
 import References from "./pages/References.jsx";
@@ -9,9 +9,14 @@ import Segments from "./pages/Segments.jsx";
 import Processing from "./pages/Processing.jsx";
 import Studio from "./pages/Studio.jsx";
 import Publish from "./pages/Publish.jsx";
+import Library from "./pages/Library.jsx";
+import History from "./pages/History.jsx";
+import Revisions from "./pages/Revisions.jsx";
+import Settings from "./pages/Settings.jsx";
+import Format from "./pages/Format.jsx";
 
 // Must match API_VERSION in backend/app/main.py.
-const EXPECTED_API = "1.4.0";
+const EXPECTED_API = "1.7.0";
 
 const STEPS = [
   { key: "setup", label: "Topic & title", hint: "What are we writing?" },
@@ -22,30 +27,72 @@ const STEPS = [
   { key: "published", label: "Publish", hint: "DOCX · PDF · Markdown" },
 ];
 
-const readHash = () => {
-  const m = location.hash.match(/^#\/p\/([a-z0-9]+)(?:\/(\w+))?/);
-  if (m) return { id: m[1], view: m[2] };
-  return { id: null, view: location.hash === "#/new" ? "new" : null };
-};
+// Views of a project that are not steps of the workflow.
+const RECORD = [
+  { key: "history", label: "History", hint: "Everything that happened", icon: "clock" },
+  { key: "revisions", label: "Revisions", hint: "Saved states · reviewer rounds", icon: "history" },
+];
 
-function applyTheme(next) {
-  const set = () => {
-    document.documentElement.dataset.theme = next;
-    try { localStorage.setItem("raf-theme", next); } catch { /* storage unavailable */ }
+/**
+ * Addresses: #/raf (RAF home) · #/raf/library · #/raf/settings · #/raf/new · #/raf/format · #/raf/p/{id}/{view}.
+ * RAF lives under /raf so that a suite home page can take over "#/" later; addresses from before 1.5 are redirected.
+ */
+const RAIL = { min: 64, max: 420, usual: 216, compactBelow: 132 };
+
+/** Width of the sidebar: dragged with the mouse (or set with the arrow keys), remembered by this browser. */
+function useRail() {
+  const [width, setWidth] = useState(() => {
+    let saved = 0;
+    try { saved = Number(localStorage.getItem("raf-rail")); } catch { /* storage unavailable */ }
+    return saved >= RAIL.min && saved <= RAIL.max ? saved : RAIL.usual;
+  });
+  const apply = useCallback((w) => {
+    const next = Math.round(Math.min(RAIL.max, Math.max(RAIL.min, w)));
+    setWidth(next);
+    document.documentElement.style.setProperty("--rail-w", `${next}px`);
+    try { localStorage.setItem("raf-rail", String(next)); } catch { /* ignore */ }
+  }, []);
+  useEffect(() => { document.documentElement.style.setProperty("--rail-w", `${width}px`); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const startDrag = (e) => {
+    e.preventDefault();
+    const handle = e.currentTarget;
+    const left = handle.parentElement.getBoundingClientRect().left;
+    const move = (ev) => apply(ev.clientX - left);
+    const stop = () => { removeEventListener("pointermove", move); removeEventListener("pointerup", stop); document.body.classList.remove("resizing"); };
+    document.body.classList.add("resizing");
+    addEventListener("pointermove", move);
+    addEventListener("pointerup", stop);
   };
-  // Circular reveal from the toggle when the View Transitions API is available.
-  if (document.startViewTransition && !matchMedia("(prefers-reduced-motion: reduce)").matches) document.startViewTransition(set);
-  else set();
+  const onKey = (e) => {
+    const step = e.shiftKey ? 40 : 12;
+    if (e.key === "ArrowLeft") { e.preventDefault(); apply(width - step); }
+    if (e.key === "ArrowRight") { e.preventDefault(); apply(width + step); }
+    if (e.key === "Home") { e.preventDefault(); apply(RAIL.min); }
+    if (e.key === "End") { e.preventDefault(); apply(RAIL.max); }
+  };
+  return { width, compact: width < RAIL.compactBelow, startDrag, onKey, reset: () => apply(RAIL.usual) };
 }
+
+const readHash = () => {
+  let h = location.hash.replace(/^#\/?/, "");
+  if (!h.startsWith("raf")) {
+    h = h === "new" || h.startsWith("p/") ? `raf/${h}` : "raf";
+    history.replaceState(null, "", `#/${h}`);
+  }
+  const m = h.match(/^raf\/p\/([a-z0-9]+)(?:\/(\w+))?/);
+  if (m) return { id: m[1], view: m[2] };
+  return { id: null, view: ["new", "library", "settings", "format"].find((v) => h === `raf/${v}`) || null };
+};
 
 export default function App() {
   const [route, setRoute] = useState(readHash);
   const [project, setProject] = useState(null);
   const [health, setHealth] = useState(null);
   const [events, setEvents] = useState([]);
-  const [theme, setTheme] = useState(document.documentElement.dataset.theme || "dark");
+  const [theme, setTheme] = useState(currentMode);
+  const [app, setApp] = useState(null);     // RAF settings from the server: { settings, palettes, locked, unlocked, info }
   const mainRef = useRef(null);
-  const [devOpen, setDevOpen] = useState(false);
+  const rail = useRail();
 
   useEffect(() => {
     const onHash = () => setRoute(readHash());
@@ -59,6 +106,10 @@ export default function App() {
     const t = setInterval(load, 20000);
     return () => clearInterval(t);
   }, []);
+
+  const loadApp = useCallback(() => api.appSettings().then((a) => { setApp(a); applyAppearance(a.settings); return a; }).catch(() => setApp((a) => a || { settings: null })), []);
+  useEffect(() => { loadApp(); }, [loadApp]);
+  const setMode = (next) => { setTheme(next); applyMode(next); };
 
   const refresh = useCallback(async () => {
     if (!route.id) return null;
@@ -85,7 +136,7 @@ export default function App() {
   }, [route.id, refresh]);
 
   const navigate = (id, view) => {
-    location.hash = id ? `#/p/${id}${view ? "/" + view : ""}` : view === "new" ? "#/new" : "#/";
+    location.hash = id ? `#/raf/p/${id}${view ? "/" + view : ""}` : view ? `#/raf/${view}` : "#/raf";
     mainRef.current?.scrollTo({ top: 0 });
   };
 
@@ -95,6 +146,7 @@ export default function App() {
 
   const stepEnabled = (key, i) => {
     if (!project) return false;
+    if (project.mode === "format") return key === "studio" || key === "published";   // an article brought in for typesetting has no writing steps
     if (project.busy && key !== "processing" && key !== "studio") return false;
     if (key === "studio" || key === "published") return hasDrafts;
     if (key === "processing") return project.busy || reached >= 3;
@@ -106,11 +158,11 @@ export default function App() {
 
   return (
     <div className="shell">
-      <AmbientLight />
+      {app?.settings?.effects !== false && <AmbientLight />}
       <header className="topbar">
         <button className="brand" onClick={() => navigate(null)} aria-label="RAF home">
           <span className="brand-mark">RAF</span>
-          <span className="brand-sub">Research Article Fabricator</span>
+          <span className="brand-sub">{app?.settings?.workspace || "Research Article Fabricator"}</span>
         </button>
         <div className="topbar-spacer" />
         {project?.busy && (
@@ -126,32 +178,40 @@ export default function App() {
           <span className={`dot ${health?.ollama && health?.model_available ? "ok" : health ? "bad" : ""}`} />
           {!health ? "Checking engine…" : health.ollama ? (health.model_available ? `${health.model} · local` : `${health.model} not pulled`) : "Ollama offline"}
         </span>
-        <button className={`btn icon dev-button ${devOpen ? "on" : ""}`} aria-label="Developer tools: language model settings" title="Developer tools"
-          onClick={() => setDevOpen(true)}>
-          <Icon name="sliders" size={16} />
+        <button className={`btn icon dev-button ${!route.id && route.view === "settings" ? "on" : ""}`} aria-label="Settings" title="Settings"
+          onClick={() => navigate(null, "settings")}>
+          <Icon name="gear" size={16} />
         </button>
         <button className="theme-switch" aria-label="Toggle colour theme"
-          onClick={() => { const next = theme === "dark" ? "light" : "dark"; setTheme(next); applyTheme(next); }}>
+          onClick={() => setMode(theme === "dark" ? "light" : "dark")}>
           <span className="knob"><Icon name={theme === "dark" ? "moon" : "sun"} size={13} stroke={2} /></span>
         </button>
       </header>
 
-      <DevTools open={devOpen} onClose={() => { setDevOpen(false); api.health().then(setHealth).catch(() => {}); }} />
-
-      <nav className="rail" aria-label="Workflow">
-        <div className="rail-title">{project ? "Workflow" : "Start"}</div>
+      <nav className={`rail ${rail.compact ? "compact" : ""}`} aria-label="Navigation">
+        <button className={`rail-step ${!route.id && route.view === "library" ? "active" : ""}`} title="Library — every article project" onClick={() => navigate(null, "library")}>
+          <span className="num"><Icon name="books" size={15} /></span>
+          <span className="label">Library</span>
+        </button>
+        <div className="rail-rule" role="separator" />
         {STEPS.map((s, i) => (
-          <button key={s.key} disabled={!stepEnabled(s.key, i)}
+          <button key={s.key} disabled={!stepEnabled(s.key, i)} title={`${s.label} — ${s.hint}`}
             className={`rail-step ${view === s.key ? "active" : ""} ${i < reached ? "done" : ""}`}
             onClick={() => navigate(project.id, s.key)}>
             <span className="num">{String(i + 1).padStart(2, "0")}</span>
             <span className="label">{s.label}</span>
-            <span className="hint">{s.hint}</span>
           </button>
         ))}
-        <div className="rail-foot">
-          Everything runs on this machine — your documents never leave it, except for public research queries.
-        </div>
+        <div className="rail-rule" role="separator" />
+        {RECORD.map((s) => (
+          <button key={s.key} disabled={!project} title={`${s.label} — ${s.hint}`} className={`rail-step ${view === s.key ? "active" : ""}`} onClick={() => navigate(project.id, s.key)}>
+            <span className="num"><Icon name={s.icon} size={15} /></span>
+            <span className="label">{s.label}</span>
+          </button>
+        ))}
+        <div className="rail-resize" role="separator" aria-orientation="vertical" aria-label="Sidebar width — drag, or use the arrow keys; double-click to reset"
+          aria-valuenow={rail.width} aria-valuemin={RAIL.min} aria-valuemax={RAIL.max} tabIndex={0} title="Drag to resize · double-click to reset"
+          onPointerDown={rail.startDrag} onDoubleClick={rail.reset} onKeyDown={rail.onKey} />
       </nav>
 
       <main className="main" ref={mainRef}>
@@ -164,8 +224,13 @@ export default function App() {
             </span>
           </div>
         )}
-        {!route.id && route.view !== "new" && <Home navigate={navigate} health={health} />}
-        {!route.id && route.view === "new" && <Setup {...pageProps} project={null} />}
+        {!route.id && !route.view && <Home navigate={navigate} health={health} />}
+        {!route.id && route.view === "library" && <Library navigate={navigate} />}
+        {!route.id && route.view === "format" && <Format navigate={navigate} />}
+        {!route.id && route.view === "settings" && (
+          <Settings app={app} reload={loadApp} mode={theme} setMode={setMode} navigate={navigate} onModelChange={() => api.health().then(setHealth).catch(() => {})} />
+        )}
+        {!route.id && route.view === "new" && (app ? <Setup {...pageProps} project={null} defaults={app.settings?.article} /> : <div className="empty">Loading…</div>)}
         {route.id && !project && <div className="empty">Loading project…</div>}
         {project && view === "setup" && <Setup {...pageProps} />}
         {project && view === "references" && <References {...pageProps} />}
@@ -173,6 +238,8 @@ export default function App() {
         {project && view === "processing" && <Processing {...pageProps} />}
         {project && view === "studio" && <Studio {...pageProps} />}
         {project && view === "published" && <Publish {...pageProps} />}
+        {project && view === "history" && <History {...pageProps} />}
+        {project && view === "revisions" && <Revisions {...pageProps} />}
       </main>
     </div>
   );

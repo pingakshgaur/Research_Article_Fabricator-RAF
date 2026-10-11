@@ -20,7 +20,7 @@ import time
 import httpx
 
 from . import llm, llm_settings, store
-from .blueprints import BLUEPRINTS, generation_order
+from . import structure
 from .config import settings
 
 log = logging.getLogger("raf.estimate")
@@ -138,17 +138,12 @@ def segment_seconds(key: str, words: int, depth: str, filter_on: bool, style_on:
     return secs
 
 
-def simulate_lanes(keys: list[str], durations: dict[str, float], agents: int, settled: set[str]) -> float:
+def simulate_lanes(p, keys: list[str], durations: dict[str, float], agents: int, settled: set[str]) -> float:
     """Wall-clock seconds for the dependency-aware scheduler in writer.run_segments."""
-    selected = set(keys)
-    evidence = {"introduction", "literature_review", "methodology", "results", "discussion", "conclusion", "limitations"}
-
     def deps(key: str) -> list[str]:
-        if key == "references":
-            return [k for k in keys if k in evidence]
-        return [d for d in BLUEPRINTS[key].depends_on if d in selected]
+        return structure.deps(p, key, keys)
 
-    pending = [k for k in generation_order(keys) if k not in settled]
+    pending = [k for k in structure.generation_order(p, keys) if k not in settled]
     done = set(settled)
     running: list[tuple[float, str]] = []   # (finish time, key)
     clock = 0.0
@@ -191,6 +186,8 @@ def compute(p, req, keys: list[str], speed: dict) -> dict:
     research_key = f"{p.title}|{p.topic}|{p.discipline}"
     research_reused = bool(p.web_sources) and p.options.get("research_key", research_key) == research_key
     raw["research"] = 0.0 if not req.web_research or research_reused else RESEARCH_NETWORK + RESEARCH_LLM * factor
+    if raw["research"] and p.source_mode != "references":      # a second round of queries, and downloading the open-access papers
+        raw["research"] += RESEARCH_NETWORK + RESEARCH_LLM * factor + 60
 
     # ---- index
     index_reused = not new_refs and (research_reused or not req.web_research) and (index_dir / "index.pkl").exists()
@@ -203,19 +200,19 @@ def compute(p, req, keys: list[str], speed: dict) -> dict:
     raw["analysis"] = 0.0 if not wants_analysis else 1.0 if analysis_reused else (ANALYSIS_BASE + ANALYSIS_PER_DATASET * len(p.dataset_files)) * (0.5 + 0.5 * factor)
 
     # ---- segments
-    from .writer import segment_words   # local import: writer imports this module
+    segment_words = structure.segment_words
     settled = {k for k in keys if (s := p.segments.get(k)) and s.content and s.status in {"approved", "draft"}}
     seg_est: dict[str, float] = {}
     for k in keys:
         if k in settled:
             continue
-        words = segment_words(p, k) if (BLUEPRINTS[k].word_share or k == "abstract") else 0
+        words = segment_words(p, k) if structure.lengthable(p, k) else 0
         base = segment_seconds(k, words, depth, req.hallucination_filter, req.style_pass) * factor
         seg_est[k] = round(base * CONTENTION[agents] * cal["segments"], 1)
-    writing = simulate_lanes(keys, seg_est, agents, settled)
+    writing = simulate_lanes(p, keys, seg_est, agents, settled)
 
     # ---- article review (thorough only)
-    body_words = sum(segment_words(p, k) for k in keys if BLUEPRINTS[k].word_share)
+    body_words = sum(segment_words(p, k) for k in keys if structure.lengthable(p, k) and k != "abstract")
     raw["review"] = (REVIEW_BASE + REVIEW_PER_WORD * body_words) * factor if depth == "thorough" and seg_est else 0.0
 
     stages = {

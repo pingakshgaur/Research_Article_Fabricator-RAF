@@ -24,16 +24,18 @@ import re
 import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from contextlib import contextmanager
 
 import numpy as np
 
 from . import analysis as analysis_mod
-from . import citations, estimate, factcheck, jobs, llm, originality, research, store, style
-from .blueprints import BLUEPRINTS, COMMON_RULES, Blueprint, Move, generation_order, length_profile, tone_instruction
+from . import citations, estimate, factcheck, history, jobs, live, llm, llm_settings, originality, research, revisions, store, structure, style
+from .blueprints import COMMON_RULES, Blueprint, Move, tone_instruction
 from .checkpoints import Checkpoints, signature
 from .ingest import chunk_text, heuristic_metadata, llm_metadata, read_any, strip_back_matter
 from .models import AnalysisResult, Figure, GenerateRequest, Project, QualityReport, RunInfo, Segment, Table, Version
 from .rag import Chunk, HybridIndex
+from .structure import DEFAULT_LIMITS, LENGTH_LIMITS, blueprint_for, clamp_length, segment_words  # noqa: F401 - re-exported
 
 log = logging.getLogger("raf.writer")
 
@@ -41,9 +43,7 @@ AUTHOR_SYSTEM = (
     "You are RAF, a senior academic author and peer reviewer who writes publication-ready scholarly articles. "
     "You write in fluent, natural, human academic English with precise terminology and original phrasing."
 )
-EVIDENCE_SEGMENTS = ("introduction", "literature_review", "methodology", "results", "discussion", "conclusion", "limitations")
-LENGTH_LIMITS = {"abstract": (100, 400)}
-DEFAULT_LIMITS = (100, 6000)
+RUN_OPTIONS = ("web_research", "data_analysis", "depth", "agents", "hallucination_filter", "style_pass")
 _lane = threading.local()
 _checkpoints: dict[str, Checkpoints] = {}
 _checkpoints_lock = threading.Lock()
@@ -102,21 +102,33 @@ class Workspace:
         with self._lock:
             if self._fp is None:
                 texts = [c.text for c in self.index.chunks]
-                for f in (self.dir / "index").glob("ref_*.txt"):
-                    texts.append(f.read_text(encoding="utf-8"))
+                for pattern in ("ref_*.txt", "web_*.txt"):      # uploaded references and online papers read in full
+                    for f in (self.dir / "index").glob(pattern):
+                        texts.append(f.read_text(encoding="utf-8"))
                 self._fp = originality.SourceFingerprint(texts)
             return self._fp
 
     def set_segment(self, key: str, **fields) -> Project:
         def apply(p: Project):
-            seg = p.segments.get(key) or Segment(key=key, title=BLUEPRINTS[key].title)
+            seg = p.segments.get(key) or Segment(key=key, title=blueprint_for(p, key).title)
             for k, v in fields.items():
                 setattr(seg, k, v)
             p.segments[key] = seg
         p = store.mutate(self.pid, apply)
         if "status" in fields:
-            jobs.emit(self.pid, "segment", f"{BLUEPRINTS[key].title}: {fields['status']}", key=key, status=fields["status"])
+            jobs.emit(self.pid, "segment", f"{p.segments[key].title}: {fields['status']}", key=key, status=fields["status"])
         return p
+
+    # ------------------------------------------------------------------ the Window (live.py)
+    @contextmanager
+    def writing(self, key: str, base: str = ""):
+        """Model prose produced inside this block shows up live on the segment's sheet, after `base` (the text so far)."""
+        live.begin(self.pid, key, base)
+        with llm.streaming(lambda piece: live.feed(self.pid, key, piece)):
+            yield
+
+    def edit(self, key: str, kind: str, before: str, after: str = "") -> None:
+        live.edit(self.pid, key, kind, before, after)
 
     # ------------------------------------------------------------------ timer
     def begin_stage(self, stage: str) -> None:
@@ -143,21 +155,6 @@ def _close_stages(run: RunInfo, now: float) -> None:
     for name, started in list(run.stage_started.items()):
         run.stages[name] = round(run.stages.get(name, 0) + now - started, 1)
     run.stage_started = {}
-
-
-def segment_words(p: Project, key: str) -> int:
-    bp = BLUEPRINTS[key]
-    if key in p.segment_lengths:
-        return int(p.segment_lengths[key])
-    suggested = length_profile(p.article_type, p.target_words)["segments"].get(key)
-    if suggested:
-        return int(suggested["suggested"])
-    return max(0, int(p.target_words * bp.word_share))
-
-
-def clamp_length(key: str, words: int) -> int:
-    lo, hi = LENGTH_LIMITS.get(key, DEFAULT_LIMITS)
-    return max(lo, min(hi, int(words)))
 
 
 # ====================================================================== corpus
@@ -239,7 +236,8 @@ def build_corpus(ws: Workspace, req: GenerateRequest) -> None:
     store.mutate(ws.pid, save_refs)
 
     # ---- online research
-    web = []
+    web, searched = [], {}
+    deep = ws.project.source_mode != "references"      # Mixed and Research-only projects lean on online research
     research_key = f"{p.title}|{p.topic}|{p.discipline}"
     research_sig = signature(research_key)
     p = ws.project
@@ -254,8 +252,22 @@ def build_corpus(ws: Workspace, req: GenerateRequest) -> None:
                 queries = plan_queries(p, [r.title for r, _ in parsed_refs])
                 ws.log("Research queries: " + " | ".join(queries))
                 web = research.research(queries, p.discipline or p.topic, progress=ws.log)
-                web = rank_web_sources(web, f"{p.title} {p.topic}", limit=36)
+                if deep:      # a second round follows up on what the first one found
+                    more = followup_queries(p, web, queries)
+                    if more:
+                        ws.log("Follow-up queries: " + " | ".join(more))
+                        seen = {(w.doi or w.title.lower())[:120] for w in web}
+                        web += [w for w in research.research(more, p.discipline or p.topic, progress=ws.log) if (w.doi or w.title.lower())[:120] not in seen]
+                        queries += more
+                if p.source_mode == "research":      # an article built on research alone cites scholarly sources only
+                    web = [w for w in web if w.source not in {"web", "wikipedia"}]
+                web = rank_web_sources(web, f"{p.title} {p.topic}", limit=60 if deep else 36)
                 ws.log(f"Kept {len(web)} relevant online sources after de-duplication and relevance ranking")
+                if deep and web:
+                    ws.stage("Downloading the papers that are open access", "research")
+                    full = research.fetch_fulltext(web, ws.dir / "index", limit=12, progress=ws.log)
+                    ws.log(f"{full} of {len(web)} online sources read in full; the others by title and abstract")
+                searched = {"queries": len(queries), "rounds": 2 if deep and len(queries) > 5 else 1}
             except Exception as exc:  # noqa: BLE001 - fallback: continue with the uploaded references only
                 log.exception("research failed")
                 ws.log(f"⚠ Online research failed ({type(exc).__name__}: {exc}); continuing with your references only")
@@ -263,15 +275,24 @@ def build_corpus(ws: Workspace, req: GenerateRequest) -> None:
 
         def save_web(proj: Project):
             proj.web_sources = web
-            proj.options = {**proj.options, "research_key": research_key}
+            proj.options = {**proj.options, "research_key": research_key, **({"search": searched} if searched else {}),
+                            **({"sources_confirmed": research_key} if req.sources_confirmed else {})}
         store.mutate(ws.pid, save_web)
         if web:
             ws.cp.mark_corpus("research", research_sig, f"{len(web)} online sources")
+        if p.source_mode == "research" and not web:
+            raise RuntimeError("Online research found no usable sources for this topic. Check the connection, sharpen the title and topic, or add reference files.")
+        if deep and web and not (req.sources_confirmed or p.options.get("sources_confirmed") == research_key):
+            raise SourcesReview(len(web))       # the author looks through the reading list before anything is written
     for i, w in enumerate(web, 1):
         label = f"W{i}"
-        text = f"{w.title}. {w.abstract}"
-        pieces = chunk_text(text, target_words=200) or [text[:1500]]
-        chunks += [Chunk(id=f"{label}-{j}", text=t, source_id=w.id, source_kind="web", label=label) for j, t in enumerate(pieces[:4])]
+        whole = ws.dir / "index" / f"web_{w.id}.txt"
+        if w.fulltext and whole.exists():      # read in full: indexed like an uploaded reference
+            pieces = chunk_text(whole.read_text(encoding="utf-8"))[:60]
+        else:
+            text = f"{w.title}. {w.abstract}"
+            pieces = (chunk_text(text, target_words=200) or [text[:1500]])[:4]
+        chunks += [Chunk(id=f"{label}-{j}", text=t, source_id=w.id, source_kind="web", label=label) for j, t in enumerate(pieces)]
 
     # ---- index
     ws.begin_stage("indexing")
@@ -317,6 +338,27 @@ def build_corpus(ws: Workspace, req: GenerateRequest) -> None:
                 ws.cp.mark_corpus("analysis", analysis_sig, "data analysis")
 
 
+class SourcesReview(Exception):
+    """Raised inside a run to pause it: online research is done and the author has to approve the reading list."""
+
+
+def followup_queries(p: Project, found: list, asked: list[str]) -> list[str]:
+    """Second research round: queries for what the first round's results leave uncovered."""
+    if not found:
+        return []
+    titles = "\n- ".join(w.title[:120] for w in found[:30])
+    data = llm.generate_json(
+        "You are a research librarian refining a literature search. Reply with JSON only.",
+        f"Article title: {p.title}\nTopic description: {p.topic}\nDiscipline: {p.discipline}\n\nQueries already run: {' | '.join(asked)}\n\n"
+        f"Titles found so far:\n- {titles}\n\n"
+        "Which aspects of the topic are still thin or missing (methods, competing theories, recent evidence, specific contexts, critiques)? "
+        "Give 4 new, concise search queries (3–7 words each) that would fill those gaps. Do not repeat the queries already run. JSON: {\"queries\": [..]}",
+        default={}, max_tokens=300,
+    )
+    done = {q.lower() for q in asked}
+    return [q.strip() for q in (data.get("queries") or [] if isinstance(data, dict) else []) if isinstance(q, str) and q.strip() and q.lower() not in done][:4]
+
+
 def plan_queries(p: Project, ref_titles: list[str]) -> list[str]:
     data = llm.generate_json(
         "You are a research librarian designing database search strategies. Reply with JSON only.",
@@ -346,28 +388,39 @@ def rank_web_sources(web, query: str, limit: int):
 # ====================================================================== generation entry points
 def generate_article(pid: str, req: GenerateRequest) -> None:
     ws = Workspace(pid)
+    if req.resume:  # a resume continues with the choices the run was started with, unless the request overrides them
+        stored = ws.project.options
+        req = req.model_copy(update={k: stored[k] for k in RUN_OPTIONS if k not in req.model_fields_set and k in stored})
     keys = list(dict.fromkeys(req.segments))
-    if set(EVIDENCE_SEGMENTS) & set(keys) and "references" not in keys:
+    by_hand = [k for k in keys if blueprint_for(ws.project, k).special == "manual"]   # the author writes these; a run leaves them alone
+    keys = [k for k in keys if k not in by_hand]
+    if any(structure.cites(ws.project, k) for k in keys) and "references" not in keys:
         keys.append("references")
         ws.log("References added automatically because the selected segments cite sources")
     llm.runtime.configure(req.agents, notify=ws.log)
+    if not req.resume:   # a new run replaces drafts, so the article as it stands is kept as a revision first
+        revisions.snapshot(pid, "Before fabrication run", auto=True, trigger="run")
+    history.record(pid, "run.resumed" if req.resume else "run.started",
+                   f"Fabrication {'resumed' if req.resume else 'started'} — {len(keys)} segments · {req.depth} · {req.agents} agent{'s' if req.agents > 1 else ''}",
+                   model=llm_settings.get()["model"], **{k: getattr(req, k) for k in RUN_OPTIONS}, segments=keys)
     now = time.time()
 
     def init(p: Project):
-        p.selected = keys
-        p.options = {**p.options, "web_research": req.web_research, "data_analysis": req.data_analysis, "depth": req.depth, "agents": req.agents,
-                     "hallucination_filter": req.hallucination_filter, "style_pass": req.style_pass}
+        p.selected = structure.order(p, [*keys, *by_hand])
+        for k in by_hand:
+            p.segments.setdefault(k, Segment(key=k, title=blueprint_for(p, k).title, status="draft"))
+        p.options = {**p.options, **{k: getattr(req, k) for k in RUN_OPTIONS}}
         if req.tone:
             p.tone = {"name": req.tone.get("name", "academic"), "intensity": int(req.tone.get("intensity", 50))}
         for k, words in req.lengths.items():
-            if k in BLUEPRINTS:
+            if structure.exists(p, k):
                 p.segment_lengths[k] = clamp_length(k, words)
         p.stage = "processing"
         for k in keys:
             seg = p.segments.get(k)
             keep = seg is not None and seg.content and (seg.status == "approved" or (req.resume and seg.status == "draft"))
             if not keep:
-                p.segments[k] = Segment(key=k, title=BLUEPRINTS[k].title, status="queued", versions=seg.versions if seg else [])
+                p.segments[k] = Segment(key=k, title=blueprint_for(p, k).title, status="queued", versions=seg.versions if seg else [])
         if not req.resume or p.run.status in {"idle", "completed"}:
             p.run = RunInfo(first_started=now)
         p.run.status, p.run.session_started, p.run.finished = "running", now, None
@@ -387,11 +440,21 @@ def generate_article(pid: str, req: GenerateRequest) -> None:
         run_segments(ws, keys, req.depth, req.agents)
         if req.depth == "thorough":
             review_and_fix(ws, keys)
-    except Exception:
+    except SourcesReview as pause:
+        _stop_run(ws, keys, "review")
+        found = ws.project.web_sources
+        history.record(pid, "run.paused", f"Reading list ready — {len(found)} online sources found, {sum(w.fulltext for w in found)} read in full; waiting for your approval", actor="RAF")
+        jobs.emit(pid, "log", f"⏸ {pause.args[0]} online sources found. Look through the reading list, remove what does not belong, then start the writing.")
+        return
+    except Exception as exc:
         _stop_run(ws, keys, "stopped")
+        history.record(pid, "run.stopped", f"Fabrication stopped — {type(exc).__name__}: {str(exc)[:160]}", actor="RAF")
         raise
     _stop_run(ws, keys, "completed")
     p = ws.project
+    history.record(pid, "run.completed", f"Fabrication completed in {estimate.fmt(p.run.elapsed_before)} — "
+                   f"{sum(1 for k in keys if k in p.segments and p.segments[k].content)} of {len(keys)} segments written",
+                   actor="RAF", seconds=p.run.elapsed_before, sessions=p.run.sessions)
     try:
         estimate.record(p)
     except Exception:  # noqa: BLE001 - calibration is best-effort
@@ -446,15 +509,13 @@ def _stop_run(ws: Workspace, keys: list[str], status: str) -> None:
 
 def run_segments(ws: Workspace, keys: list[str], depth: str, agents: int) -> None:
     """Dependency-aware scheduler: up to `agents` segments are written at the same time."""
-    selected = set(keys)
-    pending = [k for k in generation_order(keys)]
+    plan = ws.project
+    pending = structure.generation_order(plan, keys)
     running: dict = {}
     lanes = list(range(1, agents + 1))
 
     def deps_of(key: str) -> list[str]:
-        if key == "references":
-            return [k for k in keys if k in EVIDENCE_SEGMENTS]
-        return [d for d in BLUEPRINTS[key].depends_on if d in selected]
+        return structure.deps(plan, key, keys)
 
     def job(key: str, lane: int) -> None:
         _lane.value = lane
@@ -494,7 +555,7 @@ def run_segments(ws: Workspace, keys: list[str], depth: str, agents: int) -> Non
 
 def write_segment(ws: Workspace, key: str, depth: str = "thorough") -> None:
     """Write one segment with a fallback ladder: requested depth → quick → single-pass emergency draft."""
-    bp = BLUEPRINTS[key]
+    bp = blueprint_for(ws.project, key)
     ws.stage(f"Writing: {bp.title}", "writing", key=key)
     ws.set_segment(key, status="working", error="")
     ws.segment_clock(key, True)
@@ -503,7 +564,7 @@ def write_segment(ws: Workspace, key: str, depth: str = "thorough") -> None:
         for n, mode in enumerate(attempts):
             try:
                 if mode == "emergency":
-                    if bp.special in {"references", "appendices", "keywords", "title"}:
+                    if bp.special in {"references", "appendices", "keywords", "title", "manual"}:
                         raise RuntimeError("no emergency builder for this segment")
                     ws.log(f"⚠ {bp.title}: using the single-pass emergency draft")
                     content, evidence, extras = build_emergency(ws, bp)
@@ -514,6 +575,10 @@ def write_segment(ws: Workspace, key: str, depth: str = "thorough") -> None:
                         "results": build_results,
                     }.get(bp.special or key, build_generic)
                     content, evidence, extras = builder(ws, bp, mode)
+                if not content.strip() and bp.special == "references":      # nothing is cited (possible when there are no uploaded references)
+                    ws.set_segment(key, status="draft", content="", error="No source is cited in the article yet, so there is nothing to list.")
+                    ws.log("References: no source is cited in the article yet; the list is empty")
+                    return
                 if not content.strip():
                     raise RuntimeError("the model returned an empty draft")
                 finalize(ws, key, content, evidence, reason="initial draft" if n == 0 else f"initial draft ({mode} fallback)", depth=mode, **extras)
@@ -526,6 +591,7 @@ def write_segment(ws: Workspace, key: str, depth: str = "thorough") -> None:
                 else:
                     ws.set_segment(key, status="failed", error=str(exc))
                     ws.log(f"✗ {bp.title} could not be written: {exc}")
+                    history.record(ws.pid, "segment.failed", f"{bp.title} could not be written — {str(exc)[:160]}", actor="RAF", segment=key)
     finally:
         ws.segment_clock(key, False)
 
@@ -533,8 +599,8 @@ def write_segment(ws: Workspace, key: str, depth: str = "thorough") -> None:
 def finalize(ws: Workspace, key: str, content: str, evidence: str, reason: str, depth: str = "thorough",
              figures: list[Figure] | None = None, tables: list[Table] | None = None, notes: list[str] | None = None,
              skip_guard: bool = False) -> None:
-    bp = BLUEPRINTS[key]
     p = ws.project
+    bp = blueprint_for(p, key)
     rewritten, overlap, flagged = 0, 0.0, 0
     grounding, flags, style_report = {}, [], {}
     if not skip_guard:
@@ -567,7 +633,8 @@ def finalize(ws: Workspace, key: str, content: str, evidence: str, reason: str, 
                 try:
                     content, style_report = style.humanize_text(
                         content, title=p.title, section=bp.title, tone_rule=tone_instruction(p.tone),
-                        profile=style.field_profile(ws.dir / "index"), deep=False, only_below=65, progress=ws.log)
+                        profile=style.field_profile(ws.dir / "index"), deep=False, only_below=65, progress=ws.log,
+                        on_edit=lambda before, after: ws.edit(key, "polished", before, after))
                 except Exception as exc:  # noqa: BLE001
                     ws.log(f"⚠ Style pass skipped for {bp.title} ({exc})")
             if cacheable:
@@ -575,13 +642,14 @@ def finalize(ws: Workspace, key: str, content: str, evidence: str, reason: str, 
                           label=f"{bp.title} · integrity-filtered")
         ws.stage(f"Originality & integrity checks: {bp.title}", "guard", key=key)
         try:
-            content, check, rewritten = originality.enforce(content, ws.fingerprint, progress=ws.log, rounds=2 if depth == "thorough" else 1)
+            content, check, rewritten = originality.enforce(content, ws.fingerprint, progress=ws.log, rounds=2 if depth == "thorough" else 1,
+                                                            on_edit=lambda before, after: ws.edit(key, "re-expressed", before, after))
             overlap, flagged = check.overlap, len(check.flagged)
         except Exception as exc:  # noqa: BLE001 - fallback: keep the draft, report that the guard did not finish
             ws.log(f"⚠ Originality guard could not finish for {bp.title} ({exc}); please re-run a tool on this segment later")
     words = len(re.sub(r"\[\[.*?\]\]|\[[RW]\d+.*?\]", "", content).split())
     q = QualityReport(
-        words=words, target_words=segment_words(p, key) if bp.word_share or key == "abstract" else 0, ngram_overlap=round(overlap, 4),
+        words=words, target_words=segment_words(p, key) if structure.lengthable(p, key) else 0, ngram_overlap=round(overlap, 4),
         flagged_sentences=flagged, rewritten_sentences=rewritten, readability=originality.readability(content) if words > 80 else None,
         citations=len(citations.MARKER.findall(content)),
         unverified_numbers=[] if skip_guard else originality.unverified_numbers(content, evidence),
@@ -598,8 +666,15 @@ def finalize(ws: Workspace, key: str, content: str, evidence: str, reason: str, 
         fields["notes"] = notes
     if q.unverified_numbers:
         ws.log(f"{bp.title}: numbers not found in evidence flagged for review: {', '.join(q.unverified_numbers[:8])}")
+    live.commit(ws.pid, key, content)
     ws.set_segment(key, **fields)
+    live.close(ws.pid, key)
     ws.log(f"✓ {bp.title}: {words} words · source overlap {overlap:.1%} · {rewritten} sentence(s) re-expressed")
+    kind, actor, summary = history.from_reason(seg.title or bp.title, reason)
+    history.record(ws.pid, kind, f"{summary} · {words} words", actor=actor, segment=key, version=len(fields["versions"]),
+                   **history.words_delta(seg.content, content), citations=q.citations, overlap=q.ngram_overlap)
+    if key != "references" and not jobs.running(ws.pid):   # during a run or a round the list is rebuilt once, at the end
+        sync_references(ws.pid)
 
 
 # ====================================================================== shared helpers
@@ -621,7 +696,13 @@ def retrieve(ws: Workspace, queries: list[str], k_each: int = 5, cap: int = 10) 
             if c.id not in seen:
                 seen.add(c.id)
                 out.append(c)
-    return out[:cap]
+    out = out[:cap]
+    # sources the author pinned are always put in front of the writer: their best passage for this query joins the evidence
+    pinned = [w.id for w in ws.project.web_sources if w.pinned][:4]
+    for source_id in pinned if queries else []:
+        if not any(c.source_id == source_id for c in out):
+            out += ws.index.search_within(queries[0], {source_id}, k=1)
+    return out
 
 
 def article_context(p: Project, keys: tuple[str, ...], words_each: int = 450) -> str:
@@ -703,6 +784,7 @@ def critique_and_refine(ws: Workspace, bp: Blueprint, text: str, evidence: str) 
     issues = "\n".join(f"- Unmet requirement: {q}" for q in failed) + "\n" + "\n".join(f"- {w}" for w in weaknesses)
     words = len(text.split())
     try:
+      with ws.writing(bp.key):
         revised = llm.generate(
             AUTHOR_SYSTEM,
             f"Revise the '{bp.title}' section below to fix the reviewer's issues.\n\nISSUES:\n{issues}\n\n"
@@ -713,8 +795,11 @@ def critique_and_refine(ws: Workspace, bp: Blueprint, text: str, evidence: str) 
         )
     except llm.LLMError as exc:  # fallback: keep the unrefined draft
         ws.log(f"⚠ Refinement of {bp.title} skipped ({exc}); keeping the reviewed draft")
+        live.commit(ws.pid, bp.key, text)
         return text
-    return revised if len(revised.split()) > words * 0.6 else text
+    out = revised if len(revised.split()) > words * 0.6 else text
+    live.commit(ws.pid, bp.key, out)
+    return out
 
 
 def run_moves(ws: Workspace, bp: Blueprint, moves: list[Move], total_words: int, depth: str, extra_context: str = "",
@@ -769,9 +854,11 @@ def run_moves(ws: Workspace, bp: Blueprint, moves: list[Move], total_words: int,
                         ws.log(f"⚠ Notes for “{move.name}” failed ({exc}); drafting directly from the evidence")
                 if extra_evidence:
                     material = f"{material}\n\n{extra_evidence}".strip()
-                draft = draft_move(ws, bp, move, material or "(No external evidence needed; rely on the article context.)", plan["words"], body, extra_context).strip()
+                with ws.writing(key, body + "\n\n" if body else ""):
+                    draft = draft_move(ws, bp, move, material or "(No external evidence needed; rely on the article context.)", plan["words"], body, extra_context).strip()
                 cp.put(key, total_words, f"draft:{i}", draft, label=f"{bp.title} · move {i}/{n} drafted")
             body = f"{body}\n\n{draft}".strip()
+            live.commit(ws.pid, key, body)
 
     evidence = "\n\n".join(evidence_log)
     if depth == "thorough" and bp.checks:
@@ -803,7 +890,8 @@ def build_emergency(ws: Workspace, bp: Blueprint):
     chunks = retrieve(ws, [f"{bp.title} {p.title}", p.topic or p.title], k_each=6, cap=10) if bp.needs_evidence and ws.index.chunks else []
     ev = evidence_block(chunks, p, max_words=120) if chunks else ""
     ctx = article_context(p, bp.depends_on, 250)
-    text = llm.generate(
+    with ws.writing(bp.key):
+      text = llm.generate(
         AUTHOR_SYSTEM,
         f"ARTICLE TITLE: {p.title}\nTOPIC: {p.topic}\nSECTION: {bp.title}\nPURPOSE: {bp.description}\n\n"
         + (f"ARTICLE CONTEXT:\n{ctx}\n\n" if ctx else "") + (f"EVIDENCE:\n{ev}\n\n" if ev else "") + f"{findings_text(p.analysis)}\n\n"
@@ -878,11 +966,20 @@ def discover_themes(ws: Workspace) -> list[dict]:
 
 def analysis_protocol(p: Project) -> str:
     refs = [r for r in p.references if r.status == "parsed"]
-    lines = ["ANALYSIS PROTOCOL (facts about what was actually done — describe only these):",
-             f"- Literature base: {len(refs)} peer-reviewed/scholarly reference documents supplied for the study, analysed in full text.",]
+    lines = ["ANALYSIS PROTOCOL (facts about what was actually done — describe only these):"]
+    if refs:
+        lines.append(f"- Literature base: {len(refs)} peer-reviewed/scholarly reference documents supplied for the study, analysed in full text.")
     if p.web_sources:
         dbs = sorted({w.source for w in p.web_sources})
-        lines.append(f"- Supplementary literature search across {', '.join(dbs)}; {len(p.web_sources)} additional sources retained after relevance screening and de-duplication.")
+        full = sum(w.fulltext for w in p.web_sources)
+        search = p.options.get("search") or {}
+        how = f" using {search['queries']} queries in {search['rounds']} round{'s' if search['rounds'] > 1 else ''}" if search else ""
+        if p.source_mode == "references":
+            lines.append(f"- Supplementary literature search across {', '.join(dbs)}; {len(p.web_sources)} additional sources retained after relevance screening and de-duplication.")
+        else:      # the search IS the literature base (Research-only) or a large part of it (Mixed): say exactly how far the reading went
+            lines.append(f"- {'Literature base' if not refs else 'Additional literature'}: a structured search of {', '.join(dbs)}{how}; {len(p.web_sources)} sources "
+                         f"retained after relevance screening and de-duplication. {full} of them were read in full text (open-access copies); "
+                         f"the remaining {len(p.web_sources) - full} were assessed from title and abstract only, which limits how much detail could be drawn from them.")
     a = p.analysis
     if a and a.datasets:
         for d in a.datasets:
@@ -1019,13 +1116,14 @@ def build_abstract(ws: Workspace, bp: Blueprint, depth: str):
     ctx = article_context(p, ("introduction", "methodology", "results", "discussion", "conclusion"), 380)
     if not ctx:
         ctx = findings_text(p.analysis) or f"Topic: {p.topic}"
-    text = llm.generate(
+    with ws.writing(bp.key):
+      text = llm.generate(
         AUTHOR_SYSTEM,
         f"ARTICLE TITLE: {p.title}\n\n{ctx}\n\n{findings_text(p.analysis)}\n\nRULES:\n{rules_text(bp, p)}\n\n"
         f"Write the abstract now as one paragraph of about {words} words. No citations, no headings. Output only the abstract.",
         temperature=0.6, max_tokens=int(words * 2.2) + 200,
     )
-    text = citations.MARKER.sub("", text).replace("  ", " ").replace(" .", ".")
+    text = re.sub(r" \.(?!\d)", ".", citations.MARKER.sub("", text).replace("  ", " "))
     return text.strip(), ctx + findings_text(p.analysis), {}
 
 
@@ -1118,8 +1216,8 @@ TOOL_INSTRUCTIONS = {
 def revise_segment(pid: str, key: str, instruction: str, selection: str = "", reason: str = "revision") -> None:
     ws = Workspace(pid)
     llm.runtime.notify = ws.log
-    bp = BLUEPRINTS[key]
     p = ws.project
+    bp = blueprint_for(p, key)
     seg = p.segments[key]
     ws.set_segment(key, status="revising")
     ws.stage(f"Revising {bp.title}", "revising", key=key)
@@ -1140,7 +1238,8 @@ def revise_segment(pid: str, key: str, instruction: str, selection: str = "", re
         protocol = analysis_protocol(p) if key == "methodology" else ""
         target = selection.strip() if selection.strip() and selection.strip() in seg.content else seg.content
         words = len(target.split())
-        new = llm.generate(
+        with ws.writing(key):
+          new = llm.generate(
             AUTHOR_SYSTEM,
             f"ARTICLE: {p.title}\nSECTION: {bp.title}\nSECTION PURPOSE: {bp.description}\n\n"
             f"AUTHOR'S REVISION REQUEST: {instruction}\n\n"
@@ -1153,6 +1252,8 @@ def revise_segment(pid: str, key: str, instruction: str, selection: str = "", re
             temperature=0.65, max_tokens=int(max(words, 120) * 2.6) + 400,
         )
         new = new.strip()
+        if not bp.citations:   # e.g. the Abstract: a revision must not bring citations into a segment that carries none
+            new = re.sub(r"[ \t]+([.,;])(?!\d)", r"\1", citations.MARKER.sub("", new)).replace("  ", " ")
         content = seg.content.replace(target, new, 1) if target is not seg.content else new
         if key == "results" and p.analysis:
             content = _restore_placeholders(content, AnalysisResult(tables=seg.tables, figures=seg.figures))
@@ -1193,6 +1294,7 @@ def review_and_fix(ws: Workspace, keys: list[str], apply_fixes: bool = True) -> 
     store.mutate(ws.pid, lambda proj: setattr(proj, "review", report))
     ws.cp.mark_corpus("review", signature({k: ws.project.segments[k].content for k in keys if k in ws.project.segments}), "article review")
     ws.log(f"Article review: {len(report['issues'])} issue(s) found, {applied} fixed automatically")
+    history.record(ws.pid, "review.completed", f"Article review — {len(report['issues'])} issue(s) found, {applied} fixed automatically", actor="RAF")
     return report
 
 
@@ -1200,8 +1302,8 @@ def humanize_segment(pid: str, key: str, selection: str = "") -> None:
     """Studio Humanize tool: paragraph-level rewriting with a fact inventory and verification gate."""
     ws = Workspace(pid)
     llm.runtime.notify = ws.log
-    bp = BLUEPRINTS[key]
     p = ws.project
+    bp = blueprint_for(p, key)
     seg = p.segments[key]
     ws.set_segment(key, status="revising")
     ws.stage(f"Humanizing {bp.title}", "revising", key=key)
@@ -1218,6 +1320,8 @@ def humanize_segment(pid: str, key: str, selection: str = "") -> None:
         q.humanize = {**report, "at": time.time()}
         ws.set_segment(key, content=content, quality=q, status="draft", error="",
                        versions=[*seg.versions, Version(content=content, reason=f"humanize: {report['rewritten']}/{report['attempted']} paragraphs")][-20:])
+        history.record(pid, "segment.tool", f"Humanize applied to {seg.title} — {report['rewritten']} of {report['attempted']} paragraphs rewritten",
+                       actor="RAF", segment=key, **history.words_delta(seg.content, content))
     except Exception as exc:  # noqa: BLE001
         ws.set_segment(key, status="draft", error=str(exc))
         raise
@@ -1231,19 +1335,54 @@ def regenerate_segment(pid: str, key: str) -> None:
     write_segment(ws, key, p.options.get("depth", "thorough"))
 
 
-def manual_edit(pid: str, key: str, content: str) -> Project:
+def manual_edit(pid: str, key: str, content: str, reason: str = "manual edit") -> Project:
     ws = Workspace(pid)
     p = ws.project
     seg = p.segments[key]
     q = seg.quality.model_copy()
     q.words = len(content.split())
     q.citations = len(citations.MARKER.findall(content))
-    if BLUEPRINTS[key].special not in {"references", "title", "keywords", "appendices"} and ws.index.chunks:
+    if blueprint_for(p, key).special not in {"references", "title", "keywords", "appendices"} and ws.index.chunks:
         chk = originality.check(content, ws.fingerprint)
         q.ngram_overlap, q.flagged_sentences = round(chk.overlap, 4), len(chk.flagged)
         q.style = style.metrics(content)
     q.flags = [f for f in q.flags if f.get("sentence", "")[:80] in content]   # an edited-away sentence is no longer flagged
-    return ws.set_segment(key, content=content, quality=q, status="draft", error="", versions=[*seg.versions, Version(content=content, reason="manual edit")][-20:])
+    out = ws.set_segment(key, content=content, quality=q, status="draft", error="", versions=[*seg.versions, Version(content=content, reason=reason)][-20:])
+    kind, actor, summary = history.from_reason(seg.title, reason)
+    before, after = len(seg.content.split()), q.words
+    history.record(pid, kind, summary + (f" ({after - before:+d} words)" if seg.content else f" · {after} words"), actor=actor, segment=key,
+                   version=len(out.segments[key].versions), words_before=before, words=after)
+    if key != "references" and not jobs.running(pid) and sync_references(pid):
+        out = store.load(pid)
+    return out
+
+
+HAND_KEPT = ("manual edit", "imported", "restored")
+
+
+def sync_references(pid: str) -> bool:
+    """Rebuild the reference list from the citations in the segments that go into the document.
+
+    The list is derived text: it changes when citing text is added, removed, edited or left out. It is left alone when
+    the author's own hand was the last thing to touch it (an edit, an import, a restore) — Regenerate hands it back to RAF.
+    Returns True when the list changed.
+    """
+    p = store.load(pid)
+    seg = p.segments.get("references") if p else None
+    if not seg or not seg.content or (seg.versions and seg.versions[-1].reason.startswith(HAND_KEPT)):
+        return False
+    texts = [p.segments[k].content for k in structure.order(p, p.segments) if k != "references" and structure.included(p, k)]
+    content = "\n".join(citations.reference_list(p, texts)[0])
+    if content == seg.content:
+        return False
+
+    def apply(proj: Project):
+        s = proj.segments["references"]
+        s.content, s.quality.words = content, len(content.split())
+        s.versions = [*s.versions, Version(content=content, reason="rebuilt from the citations")][-20:]
+    store.mutate(pid, apply)
+    history.record(pid, "segment.rebuilt", "References rebuilt from the citations in the article", actor="RAF", segment="references")
+    return True
 
 
 def recover_interrupted_runs() -> None:

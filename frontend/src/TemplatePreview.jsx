@@ -4,7 +4,6 @@ import { Button, Icon } from "./ui.jsx";
 
 /* In-page template preview: a floating panel that typesets excerpts of the author's own article in each layout. */
 
-const BODY_ORDER = ["introduction", "literature_review", "methodology", "results", "discussion", "conclusion", "limitations"];
 
 const PLACEHOLDER = {
   title: "Adaptive Crowd Management in Mass Gatherings: Evidence from Urban Event Venues",
@@ -55,6 +54,8 @@ function buildSample(project) {
       return `${surname}${(s?.authors?.length || 0) > 2 ? " et al." : ""}, ${s?.year || "n.d."}`;
     }).join("; ")})`;
   });
+  // body sections as the author arranged them (project.structure), without the ones left out
+  const BODY_ORDER = project.structure.filter((r) => !r.front && r.included && !["references", "appendices"].includes(r.key)).map((r) => r.key);
   const seg = (k) => project.segments[k]?.content?.trim() || "";
   const paragraphs = (k) => seg(k).split(/\n\s*\n/).map((b) => b.trim()).filter((b) => b && !/^\[\[(TABLE|FIGURE)/.test(b) && !/^Appendix/.test(b));
 

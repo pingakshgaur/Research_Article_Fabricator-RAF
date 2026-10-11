@@ -7,7 +7,16 @@
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%237F3AED'/><text x='50%25' y='58%25' font-family='Georgia' font-style='italic' font-size='34' fill='white' text-anchor='middle' dominant-baseline='middle'>R</text></svg>" />
     <title>RAF — Research Article Fabricator</title>
     <script>
-      try { const t = localStorage.getItem("raf-theme"); document.documentElement.dataset.theme = t || (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark"); } catch { document.documentElement.dataset.theme = "dark"; }
+      // Applied before the first paint so the page never flashes in the wrong colours (see src/theme.js).
+      try {
+        const root = document.documentElement, t = localStorage.getItem("raf-theme");
+        root.dataset.theme = t || (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+        root.dataset.palette = localStorage.getItem("raf-palette") || "violet";
+        root.dataset.effects = localStorage.getItem("raf-effects") || "on";
+        if (root.dataset.palette === "custom") Object.entries(JSON.parse(localStorage.getItem("raf-custom") || "{}")).forEach(([k, v]) => root.style.setProperty(k, v));
+        const w = Number(localStorage.getItem("raf-rail"));
+        if (w) root.style.setProperty("--rail-w", w + "px");
+      } catch { document.documentElement.dataset.theme = "dark"; }
     </script>
   </head>
   <body>

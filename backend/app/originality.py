@@ -34,9 +34,7 @@ CLICHES = {
     r"\bever-evolving\b": "changing",
     r"\bunderscore(s|d)? the (importance|significance) of\b": "highlight",
     r"\bserves as a\b": "is a",
-    r"\bmoreover,\s": "In addition, ",
-    r"\bfurthermore,\s": "Further, ",
-    r"\bin conclusion,\s": "",
+    r"\b(moreover|furthermore|in conclusion),\s": "",   # dropped, not swapped for another stock connector
     r"\btapestry\b": "combination",
     r"\bseamless(ly)?\b": "smooth",
     r"\bleverag(e|es|ing)\b": "use",
@@ -103,7 +101,7 @@ def check(text: str, fp: SourceFingerprint) -> Check:
     return Check(overlap=overlap, flagged=flagged)
 
 
-def enforce(text: str, fp: SourceFingerprint, progress=None, rounds: int = 2) -> tuple[str, Check, int]:
+def enforce(text: str, fp: SourceFingerprint, progress=None, rounds: int = 2, on_edit=None) -> tuple[str, Check, int]:
     """Rewrite any passage that is too close to a source. Returns (text, final check, sentences rewritten)."""
     rewritten = 0
     result = check(text, fp)
@@ -133,6 +131,8 @@ def enforce(text: str, fp: SourceFingerprint, progress=None, rounds: int = 2) ->
             if new and len(new) > 20 and "\n" not in new and original in text:
                 text = text.replace(original, new, 1)
                 rewritten += 1
+                if on_edit:
+                    on_edit(original, new)
         result = check(text, fp)
     return text, result, rewritten
 
@@ -154,9 +154,9 @@ def destyle(text: str) -> str:
     """Remove machine-sounding clichés and normalise typography."""
     for pattern, repl in CLICHES.items():
         text = re.sub(pattern, repl, text, flags=re.I)
-    text = re.sub(r"(^|[.!?]\s+)([a-z])", lambda m: m.group(1) + m.group(2).upper(), text)
+    text = re.sub(r"(^|[.!?]\s+|\n\s*\n)([a-z])", lambda m: m.group(1) + m.group(2).upper(), text)
     text = re.sub(r" {2,}", " ", text)
-    text = re.sub(r"\s+([,.;:])", r"\1", text)
+    text = re.sub(r"[ \t]+([,.;:])(?!\d)", r"\1", text)      # not before a digit: "p = .05" keeps its space
     text = re.sub(r"^\s*#+\s.*$", "", text, flags=re.M)          # stray headings from the model
     text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)                  # bold emphasis is not academic style
     return re.sub(r"\n{3,}", "\n\n", text).strip()

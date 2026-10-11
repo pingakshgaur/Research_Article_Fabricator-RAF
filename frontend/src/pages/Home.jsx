@@ -10,7 +10,8 @@ const PIPELINE = [
   ["05", "Publish", "Enterprise-grade DOCX, PDF and Markdown."],
 ];
 
-const STAGE_LABEL = { setup: "Setup", references: "References", segments: "Segments", processing: "Fabricating", studio: "In studio", published: "Published" };
+const RECENT = 5;   // the full list lives in the Library
+export const STAGE_LABEL = { setup: "Setup", references: "References", segments: "Segments", processing: "Fabricating", studio: "In studio", published: "Published" };
 
 export default function Home({ navigate, health }) {
   const [projects, setProjects] = useState(null);
@@ -45,6 +46,7 @@ export default function Home({ navigate, health }) {
         </p>
         <div className="row rise" style={{ "--i": 3, marginTop: 28 }}>
           <Button variant="primary" size="lg" iconRight="arrow" onClick={() => navigate(null, "new")}>Begin a new article</Button>
+          <Button size="lg" icon="file" onClick={() => navigate(null, "format")} title="Typeset a finished article in RAF's templates. Nothing is rewritten.">Format an existing article</Button>
           {health && !health.ollama && <span className="badge bad">Start Ollama to fabricate</span>}
           {health?.ollama && !health.model_available && <span className="badge warn">Run: ollama pull {health.model}</span>}
         </div>
@@ -61,12 +63,16 @@ export default function Home({ navigate, health }) {
       </div>
 
       <div className="row between rise" style={{ "--i": 5, marginBottom: 10 }}>
-        <h2 className="h2">Your articles</h2>
-        <span className="muted mono" style={{ fontSize: 12 }}>{projects ? `${projects.length} project${projects.length === 1 ? "" : "s"}` : ""}</span>
+        <h2 className="h2">Recent articles</h2>
+        {projects?.length > 0 && (
+          <Button size="sm" variant="ghost" iconRight="arrow" onClick={() => navigate(null, "library")}>
+            See all {projects.length} in the Library
+          </Button>
+        )}
       </div>
       {projects && projects.length === 0 && <div className="empty card">No articles yet. Your first one is a title away.</div>}
       <div className="project-list">
-        {projects?.map((p, i) => (
+        {projects?.filter((p) => !p.archived).slice(0, RECENT).map((p, i) => (
           <div key={p.id} className="project-row rise" style={{ "--i": 6 + i }} onClick={() => navigate(p.id)}>
             <div>
               <div className="p-title">{p.title}</div>

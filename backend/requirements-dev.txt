@@ -1,0 +1,3 @@
+# Only needed to run the tests:  .venv\Scripts\python -m pytest backend/tests
+-r requirements.txt
+pytest>=8
