@@ -8,11 +8,15 @@ article as **DOCX, PDF or Markdown**.
 All text generation runs on your own machine through **Ollama + `gemma4:12b`**, a 12-billion-parameter small language
 model (SLM). RAF uses no API keys and has no cloud LLM.
 
+**Current version: 1.4.0** (API and web interface). This README covers how to install, run and use RAF and how the
+code is laid out. The full product specification is in [PRD.md](PRD.md).
+
 **Jump to:** [Quick start](#quick-start-windows) · [What you need](#what-you-need) ·
 [1. Prerequisites](#1-install-the-prerequisites) · [2. Get the code](#2-get-the-code) ·
 [3. Ollama and models](#3-install-ollama-and-download-the-models) · [4. Run RAF](#4-run-raf) ·
 [5. Check it works](#5-check-that-everything-works) · [Configuration](#configuration-environment-variables) ·
-[Troubleshooting](#troubleshooting)
+[Troubleshooting](#troubleshooting) · [API](#api-overview) · [Project layout](#project-layout) ·
+[Where data is stored](#where-data-is-stored) · [Working on the code](#working-on-the-code)
 
 ---
 
@@ -20,15 +24,16 @@ model (SLM). RAF uses no API keys and has no cloud LLM.
 
 | Step | What happens |
 |---|---|
-| **01 Topic & title** | Title, research focus, discipline, article type, citation style (APA / Harvard / Chicago / IEEE), target length, authors. |
-| **02 References** | Upload 10–20 PDF / DOCX / Markdown / TXT articles. You can also upload your own dataset (CSV/XLSX). |
-| **03 Segments** | Choose any of: Title, Abstract, Keywords, Introduction, Review of Literature, Methodology, Results/Analysis, Discussion, Conclusion & Implications, Limitations & Future Research, References, Appendices. |
-| **04 Fabrication** | A live pipeline view streams every step: parsing, research, indexing, analysis, writing, and integrity checks. |
-| **05 Studio** | Read each segment on a paper-style page with hoverable citations, tables and figures. Request changes in plain language, apply text tools (Expand, Condense, Formalize, Simplify, Add citations, Polish, Humanize, Strengthen) to a whole segment or a selected passage, edit by hand, restore versions, and approve. |
-| **06 Publish** | Once every segment is approved, download a typeset PDF or DOCX (or Markdown). You can also re-import an edited DOCX, PDF or Markdown file, and RAF splits it back into segments. |
+| **01 Topic & title** | Title, research focus, discipline, article type (empirical, systematic review, conceptual, case study, mixed methods), citation style (APA / Harvard / Chicago / IEEE), target length (2,500–12,000 words), authors and affiliation. |
+| **02 References** | Upload 10–20 PDF / DOCX / Markdown / TXT articles, up to 60 MB each. You can also upload your own dataset (CSV / TSV / XLSX / XLS). |
+| **03 Segments** | Choose any of: Title, Abstract, Keywords, Introduction, Review of Literature, Methodology, Results/Analysis, Discussion, Conclusion & Implications, Limitations & Future Research, References, Appendices. Presets: Full article, Core IMRaD, Literature-focused. On the same page you set the length of each segment, the tone, the writing depth, the number of agents, and switch online research, data analysis, the hallucination filter and the style pass on or off. |
+| **04 Fabrication** | RAF first estimates how long the run will take, then a live pipeline view streams every step: parsing, research, indexing, analysis, writing, and integrity checks. |
+| **05 Studio** | Read each segment on a paper-style page with hoverable citations, tables and figures. Request changes in plain language, apply text tools (Expand, Condense, Formalize, Simplify, Add citations, Polish, Humanize, Strengthen) to a whole segment or a selected passage, edit by hand, regenerate, restore any of the last 20 versions, and approve. Up to three segments can be worked on at the same time. |
+| **06 Publish** | Pick a template and colour style, preview the layout, and once every segment is approved, download a typeset PDF or DOCX (or Markdown). A draft export is available before everything is approved. You can also re-import an edited DOCX, PDF or Markdown file, and RAF splits it back into segments by matching its headings. |
 
 ## Reliability & speed features
 
+* **Time estimate.** In the first seconds of a run RAF measures the model's real speed with a short test generation (at most 14 seconds), counts the work that is left, and shows an estimated total next to the timer. The estimate covers each stage and each segment, and the projection ("≈ 40m left · ends ~16:20") tightens as the run goes on. Every completed run is recorded in `<data_dir>/timing_history.json`, and the next estimates are corrected from the last runs at the same depth, so accuracy improves with use.
 * **Timer.** The Fabrication screen shows the total time, the time for each stage and the time for each segment. Time adds up across resumed sessions.
 * **Checkpoints.** RAF saves progress as it goes: each reference it reads, the online research, the index, the analysis, the literature themes, and every evidence note, drafted part and refinement of a segment. **Resume from checkpoint** continues at the exact step that was interrupted. This also works after the API server was closed or crashed.
 * **Fallbacks.** Problems don't stop the whole run:
@@ -37,11 +42,13 @@ model (SLM). RAF uses no API keys and has no cloud LLM.
   * If the model runs out of memory, RAF reduces the number of agents, then lowers GPU offload step by step down to CPU only.
   * If Ollama crashes or restarts, RAF waits up to `RAF_OLLAMA_WAIT` seconds for it to come back.
 * **Agents.** Solo, Duo or Trio model workers. Segments that don't depend on each other are written side by side, and evidence notes are prepared ahead of drafting. Set `OLLAMA_NUM_PARALLEL` to at least the number of agents before running `ollama serve`, otherwise Ollama queues the requests and there is no speed-up (see [Speed up with multiple agents](#speed-up-with-multiple-agents)).
+* **Writing depth.** *Thorough* prepares paraphrased evidence notes for every part of a segment, runs a peer-review pass and refines the draft, repairs incoherent paragraphs, runs the style pass, checks originality twice, and finishes with a whole-article review that fixes up to three issues automatically. *Quick draft* writes each part in a single pass with lighter checks. It is much faster and weaker.
+* **Parallel Studio work.** Regenerate, Revise and the text tools run in the background, one job per segment and up to three segments at once, so you can keep reviewing other segments. Project-wide actions (a fabrication run, the article review, importing a document, changing references) wait until those jobs finish.
 * **Per-segment lengths.** Set a word target for each segment on the Segments page. Segments that haven't started can still be changed during fabrication.
 * **Front matter editing.** The Studio has dedicated editors for the Title (with suggestions), Keywords (chips) and Abstract (live word count). You can also add any of these by hand if they weren't generated.
 * **Outdated-server warning.** The UI shows a banner when the API process is running older code than the interface. Restart the API after you update RAF.
 
-## Quality, tone & publishing features (v1.3)
+## Quality, tone & publishing features
 
 * **Hallucination filter** (`backend/app/factcheck.py`). Runs on every drafted segment in four layers:
   1. Cleans up model artefacts: commentary, placeholders, citations to sources that don't exist, repeated and unfinished sentences.
@@ -52,8 +59,9 @@ model (SLM). RAF uses no API keys and has no cloud LLM.
 * **Style engine** (`backend/app/style.py`). Measures sentence variation, repeated openers, stock connectors and formulaic phrases, and gives a naturalness score. It also profiles how your reference articles are written, so drafts follow your field's conventions. **Humanize** rewrites one paragraph at a time and keeps a rewrite only if every citation, number, name, key term and claim is preserved and the style metrics improve. Otherwise the paragraph stays unchanged.
 * **Tone meter**. Five tones (Formal academic, Critical-analytical, Argumentative, Explanatory, Reflective/narrative), each with an intensity slider.
 * **Length plan**. Short / Medium / Long, pages or words for each segment. Suggestions follow the usual proportions of the selected article type.
-* **Publishing templates**. Modern Report, Classic Journal, APA 7 Manuscript, Two-Column Conference and Minimal Monograph, in 7 colour styles, for both PDF and DOCX, with a PDF preview.
-* **Developer Tools** (sliders button in the top bar). Choose the model and set temperature, top-p/top-k/min-p, repeat, presence and frequency penalties, seed, context window, output limit, batch size, GPU layers, CPU threads, keep-alive, thinking mode and timeout. Includes presets and a real speed test. Settings are stored in `<data_dir>/llm_settings.json` and apply from the next model call.
+* **Publishing templates**. Modern Report, Classic Journal, APA 7 Manuscript, Two-Column Conference and Minimal Monograph, in 7 colour styles (the APA template is monochrome), for both PDF and DOCX. **Preview layout** opens a panel inside the app that typesets excerpts of your own article in each template, and **Draft preview** exports the real file before every segment is approved.
+* **Developer Tools** (sliders button in the top bar). Choose the model and set temperature, top-p/top-k/min-p, repeat, presence and frequency penalties, seed, context window, output limit, batch size, GPU layers, CPU threads, keep-alive, thinking mode and timeout. Includes three presets (Precise, Balanced, Expressive) and a real speed test, and shows which model is loaded and how much of it sits on the GPU. Settings are stored in `<data_dir>/llm_settings.json` and apply from the next model call.
+* **Interface**. Light and dark themes (the switch is in the top bar), and a status pill that shows whether Ollama and the model are ready.
 
 A note on AI detectors: these features aim to make articles accurate, well-sourced and well-written. They are not built to beat AI-detection tools, which are unreliable in both directions. Review the text yourself and follow your venue's rules on disclosing AI assistance.
 
@@ -71,6 +79,15 @@ for each segment (dependency order) ─► blueprint moves ─► retrieve ─�
                                     ─► peer-review checklist ─► refine ─► de-cliché ─► originality guard ─► number verification
 ```
 
+* **Research** (`backend/app/research.py`): the model plans five search queries from your title, topic and reference
+  titles. The discipline you entered decides which databases are searched (for example PubMed for health, arXiv for
+  STEM, DOAJ for the humanities). Results are de-duplicated by DOI and title and ranked for relevance, and at most 36
+  online sources are kept. A database that answers "too many requests" is skipped for ten minutes instead of stalling
+  the run. In the text, `[R3]` marks an uploaded reference and `[W7]` an online source; publishing converts these
+  markers to the citation style you chose.
+* **Order of writing**: segments are written in dependency order, not in reading order. The Abstract waits for the
+  body, Keywords for the Abstract, and the Title is refined near the end. References are added automatically whenever
+  a selected segment cites sources. Your uploaded references are always listed; online sources only when cited.
 * **Blueprints** (`backend/app/blueprints.py`): each segment has its own rhetorical moves, rules and reviewer checklist.
   Introductions follow Swales' CARS model. The literature review is organised by theme: RAF clusters the corpus with
   k-means, and the model names each theme. Methodology describes *only* the procedures RAF actually ran. Results
@@ -79,7 +96,8 @@ for each segment (dependency order) ─► blueprint moves ─► retrieve ─�
   normality result, RAF then chooses Pearson or Spearman correlations with Holm–Bonferroni correction, Welch's t-test
   or Mann–Whitney U, and ANOVA or Kruskal–Wallis, each with effect sizes. It also fits OLS regression with HC3 robust
   errors, VIF and Breusch–Pagan checks, and runs trend analysis with CAGR. The engine keeps only the most informative
-  tables and figures.
+  tables and figures. Data comes from your uploaded dataset if there is one. Otherwise RAF looks for matching World
+  Bank indicators and for numeric tables inside your references.
 * **Integrity** (`backend/app/originality.py`): every draft is compared against the full source corpus. The check uses
   7-word shingle overlap plus fuzzy sentence similarity. Sentences that are too close to a source are rewritten and
   checked again. Every number in the prose is checked against the evidence, and numbers RAF cannot verify are flagged
@@ -350,8 +368,10 @@ More agents use more memory. If your machine has little RAM, stay on Solo.
 ## Use a different model
 
 RAF reads the model name from `RAF_MODEL` (default `gemma4:12b`), and you can also switch it in **Developer Tools**
-inside the app. Pull the model first, then start the API with the new name (see
-[Configuration](#configuration-environment-variables) for how to set variables on each system):
+inside the app. Developer Tools is the simpler route: it lists the models Ollama has installed, the change applies from
+the next model call, and no restart is needed. To use the variable instead, pull the model first, then start the API
+with the new name (see [Configuration](#configuration-environment-variables) for how to set variables on each system,
+and note that a model saved in Developer Tools takes priority over the variable):
 
 ```bash
 ollama pull <model-name>
@@ -373,7 +393,9 @@ noticeably weaker text. Check its output carefully.
 * **Your data:** projects, uploads, indexes, figures and exports live in `backend/data` (or the folder in
   `RAF_DATA_DIR`). Copy that folder to back it up or to move your projects to another computer.
 * **Privacy:** the writing model runs entirely on your machine. The online research step sends search queries to public
-  scholarly databases; turn it off with the **Web research** option on the Segments page before you start a run.
+  scholarly databases; turn it off with the **Online research** option on the Segments page before you start a run.
+  The data analysis step may also download World Bank indicators when you have not uploaded a dataset; the **Data
+  analysis** option controls that.
 * **Uninstall:** delete the project folder, then remove the models with `ollama rm gemma4:12b` and
   `ollama rm nomic-embed-text`.
 
@@ -393,6 +415,11 @@ On Windows you can set a variable and then run `start.bat` from the same Command
 inherits the variable. With Docker, `docker-compose.yml` passes only `RAF_OLLAMA_URL`, `RAF_MODEL`, `RAF_NUM_CTX` and
 `RAF_NUM_GPU` through (from your shell or a `.env` file next to it). Add any other variable under `environment:` for the
 `backend` service.
+
+**Developer Tools take priority for model settings.** `RAF_MODEL`, `RAF_NUM_CTX`, `RAF_NUM_GPU` and `RAF_LLM_TIMEOUT`
+only set the starting defaults. The first time you press **Save settings** in Developer Tools, RAF writes every model
+setting to `<data_dir>/llm_settings.json`, and from then on that file wins over these four variables. **Reset to
+defaults** in Developer Tools deletes the file and returns control to the environment variables.
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -439,45 +466,118 @@ or an out-of-memory error. If that happens:
 | Port 8000 or 5173 is already in use | Close the other program. Or run the API on another port, e.g. `--port 8001`, set `RAF_API=http://localhost:8001`, and start the UI with `npm run dev -- --port 5180`. |
 | A reference PDF is rejected with "no extractable text" | It is probably a scan. RAF does not OCR; use a text-based PDF or run OCR on it first. |
 | Banner about an outdated server | Restart the API window so it picks up the new code. |
-| Online research returns nothing | Check your internet connection or proxy. RAF carries on without research; you can also switch off **Web research** on the Segments page. |
+| Online research returns nothing | Check your internet connection or proxy. RAF carries on without research; you can also switch off **Online research** on the Segments page. |
+| Changing `RAF_MODEL`, `RAF_NUM_CTX`, `RAF_NUM_GPU` or `RAF_LLM_TIMEOUT` has no effect | Settings saved in Developer Tools take priority. Open Developer Tools and press **Reset to defaults**, or change the value there. |
+| "RAF is busy with …" or "already working on 3 segments" (HTTP 409) | Another job is running on that project or segment. Wait for it to finish, then try again. |
 | Docker backend cannot reach Ollama | Make sure Ollama is running on the host. On Linux start it with `OLLAMA_HOST=0.0.0.0`. |
 
 ## API overview
 
-`GET /api/health` · `GET /api/segments` · `POST /api/projects` · `POST /api/projects/{id}/references` ·
-`POST /api/projects/{id}/datasets` · `POST /api/projects/{id}/generate` · `GET /api/projects/{id}/events` (SSE) ·
-`POST …/segments/{key}/revise | tool | regenerate | approve | restore/{n}` · `PUT …/segments/{key}` ·
-`GET /api/projects/{id}/export/{pdf|docx|md}` · `POST /api/projects/{id}/import`
+All routes are under `/api`. `{id}` is a project id and `{key}` a segment key such as `introduction` or
+`literature_review`. Interactive docs with request and response schemas: http://localhost:8000/docs
 
-Interactive docs: http://localhost:8000/docs
+| Area | Routes |
+|---|---|
+| **System** | `GET /health` (status, API version, Ollama and model state, reference limits) · `GET /segments` (segment catalogue) · `GET /tones` · `GET /length-profile?article_type=&target_words=` · `GET /publish/styles` |
+| **Projects** | `GET /projects` · `POST /projects` · `GET /projects/{id}` · `PATCH /projects/{id}` · `DELETE /projects/{id}` · `POST /projects/{id}/stage/{stage}` |
+| **Uploads** | `POST /projects/{id}/references` · `DELETE /projects/{id}/references/{rid}` · `POST /projects/{id}/datasets` · `DELETE /projects/{id}/datasets/{name}` |
+| **Project settings** | `PUT /projects/{id}/lengths` · `PUT /projects/{id}/tone` · `PUT /projects/{id}/publish-style` |
+| **Fabrication** | `POST /projects/{id}/generate` (start, or resume with `"resume": true`) · `GET /projects/{id}/events` (Server-Sent Events: log, stage, segment, checkpoint, job, error, done) · `POST /projects/{id}/review` (re-run the article review) |
+| **Studio** | `POST /projects/{id}/segments/{key}/revise` · `…/tool` · `…/regenerate` · `…/approve?approved=true\|false` · `…/restore/{n}` · `PUT /projects/{id}/segments/{key}` (manual edit) · `GET /projects/{id}/files/{path}` (figures) |
+| **Publishing** | `GET /projects/{id}/export/{pdf\|docx\|md}?draft=&template=&palette=` · `POST /projects/{id}/import` |
+| **Developer Tools** | `GET /settings/llm` · `PUT /settings/llm` · `DELETE /settings/llm` (reset) · `POST /settings/llm/benchmark` |
+
+Status codes worth knowing: **409** means another job is running on the project or segment, **422** means the request
+is not valid yet (too few references, unapproved segments, unknown template), and **503** means Ollama or the model is
+not available.
 
 ## Project layout
 
 ```
+README.md            this file
+PRD.md               product requirements document (the full specification)
 start.bat            Windows launcher: sets up and starts the API and the UI
 docker-compose.yml   Docker setup (backend, frontend, optional Ollama)
+logo.png, logo.ico   RAF logo, 256 × 256 (not yet used by the app)
+.claude/launch.json  dev-server definitions for Claude Code's preview
 backend/
   requirements.txt   Python dependencies
-  Dockerfile
+  Dockerfile         Python 3.12 image, serves the API on port 8000
   app/
-    main.py          FastAPI routes + SSE
-    writer.py        corpus pipeline, segment builders, revision engine
-    blueprints.py    per-segment writing rules, moves and checklists
-    rag.py           hybrid retrieval (embeddings + BM25 + TF-IDF, RRF, MMR)
-    research.py      8 online sources with library → REST fallbacks, throttling
-    analysis.py      statistics engine, tables, figures
-    originality.py   overlap detection, paraphrase enforcement, number verification
-    factcheck.py     hallucination filter
-    style.py         style engine and naturalness score
-    citations.py     APA / Harvard / Chicago / IEEE formatting
-    publisher.py     DOCX + PDF + Markdown publishing, document re-import
-    ingest.py        PDF / DOCX / Markdown reading, metadata, chunking
-    llm.py           Ollama client, agent slots, out-of-memory fallbacks
-    llm_settings.py  Developer Tools settings
-    checkpoints.py   save and resume
+    main.py          FastAPI routes + SSE, API_VERSION
+    models.py        Pydantic data model: Project, Segment, Reference, RunInfo, request bodies
+    store.py         project persistence: one JSON file per project, with locking
+    jobs.py          background jobs and the live event stream
     config.py        environment-variable settings
+    writer.py        corpus pipeline, segment scheduler and builders, revision engine
+    blueprints.py    per-segment writing rules, moves and checklists; tones; length profiles
+    estimate.py      speed probe, fabrication time estimate, self-calibration
+    checkpoints.py   save and resume
+    ingest.py        PDF / DOCX / Markdown reading, metadata, chunking
+    research.py      8 online sources with library → REST fallbacks, throttling
+    rag.py           hybrid retrieval (embeddings + BM25 + TF-IDF, RRF, MMR)
+    analysis.py      statistics engine, tables, figures
+    factcheck.py     hallucination filter and whole-article review
+    style.py         style engine, naturalness score, Humanize
+    originality.py   overlap detection, paraphrase enforcement, number verification
+    citations.py     APA / Harvard / Chicago / IEEE formatting
+    publisher.py     templates and palettes, DOCX + PDF + Markdown publishing, document re-import
+    llm.py           Ollama client, agent slots, out-of-memory fallbacks
+    llm_settings.py  Developer Tools settings, presets, speed test
 frontend/
-  package.json       Node dependencies (React + Vite)
-  Dockerfile, nginx.conf
-  src/               React UI (App, pages/, ui.jsx, styles.css)
+  package.json       Node dependencies (React 18 + Vite 5)
+  vite.config.js     dev server on port 5173, forwards /api to the API
+  Dockerfile, nginx.conf   production build served by nginx on port 80 (8080 on the host)
+  index.html
+  src/
+    main.jsx, App.jsx     entry point; top bar, workflow rail, hash routing, API-version check
+    api.js                every API call in one place, plus the event stream
+    ui.jsx                shared components: buttons, dropdowns, toasts, icons
+    DevTools.jsx          Developer Tools drawer
+    TemplatePreview.jsx   in-app preview of the publishing templates
+    styles.css            the whole design system, light and dark themes
+    pages/                Home, Setup, References, Segments, Processing, Studio, Publish
 ```
+
+Not in Git (see `.gitignore`): `.venv/`, `frontend/node_modules/`, `frontend/dist/`, `backend/data/`, `.scratch/`,
+`ollama-models/` and `.env`.
+
+## Where data is stored
+
+Everything RAF saves is under the data folder (`backend/data` unless `RAF_DATA_DIR` says otherwise). There is no
+database.
+
+```
+<data_dir>/
+  llm_settings.json        Developer Tools settings (only after the first Save)
+  timing_history.json      estimated vs actual run times, used to calibrate estimates
+  projects/<project id>/
+    project.json           the whole project: details, references, segments and their versions, run timer, log
+    uploads/               your reference files
+    datasets/              your CSV / TSV / Excel files
+    figures/               charts produced by the analysis
+    exports/               published PDF and DOCX files, and the last imported document
+    index/
+      ref_<id>.txt, ref_<id>.tables.json   cleaned text and tables of each reference
+      index.pkl, chunks.json               the retrieval index
+      checkpoints.json                     progress markers used by Resume
+      style_profile.json                   writing-style profile of your references
+```
+
+Deleting a project in the app removes its whole folder. `project.json` keeps the last 20 versions of each segment and
+the last 400 log lines.
+
+## Working on the code
+
+* **Keep the two version numbers equal.** `API_VERSION` in `backend/app/main.py` and `EXPECTED_API` in
+  `frontend/src/App.jsx` must match (both are `1.4.0`). When they differ, the interface shows the outdated-server
+  banner. Raise both whenever a backend change affects the interface.
+* **Restart the API after backend changes.** `start.bat` and the manual commands run `uvicorn` without `--reload`. The
+  web interface reloads by itself when you edit files in `frontend/src`.
+* **Production build of the interface:** run `npm.cmd run build` in `frontend`; the result goes to `frontend/dist`.
+  If a folder `backend/static` exists, the API serves it at `/`, so a copy of `dist` there gives you RAF on one port.
+* **Tests.** The repository has no automated test suite. Scratch test scripts and their data live in `.scratch/`,
+  which Git ignores.
+* **Trying changes without touching real projects:** start a second API with `RAF_DATA_DIR` pointing to another
+  folder and a different port, and start the interface with `RAF_API` set to that port.
+  `.claude/launch.json` contains ready-made definitions for this (API on 8011, interface on 5180).
