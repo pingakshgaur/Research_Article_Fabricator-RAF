@@ -79,6 +79,16 @@ export const api = {
   resetLlmSettings: () => request("/settings/llm", { method: "DELETE" }),
   benchmark: () => request("/settings/llm/benchmark", { method: "POST" }),
 
+  // ---- cloud models: the user's own API keys (the key itself is only ever sent, never read back)
+  keys: () => request("/settings/llm/keys"),
+  addKey: (body) => request("/settings/llm/keys", { method: "POST", body }),
+  changeKey: (kid, patch) => request(`/settings/llm/keys/${kid}`, { method: "PATCH", body: patch }),
+  removeKey: (kid) => request(`/settings/llm/keys/${kid}`, { method: "DELETE" }),
+  orderKeys: (order) => request("/settings/llm/keys-order", { method: "PUT", body: { order } }),
+  setLlmMode: (mode) => request("/settings/llm/mode" + qs({ mode }), { method: "PUT" }),
+  testKey: (kid) => request(`/settings/llm/keys/${kid}/test`, { method: "POST" }),
+  keyModels: (kid) => request(`/settings/llm/keys/${kid}/models`),
+
   // ---- RAF settings and the admin lock
   appSettings: () => request("/settings/app"),
   saveAppSettings: (patch) => request("/settings/app", { method: "PUT", body: patch }),
@@ -90,7 +100,7 @@ export const api = {
   setLengths: (id, lengths) => request(`/projects/${id}/lengths`, { method: "PUT", body: { lengths } }),
   generate: (id, data) => request(`/projects/${id}/generate`, { method: "POST", body: data }),
   revise: (id, key, instruction, selection = "") => request(`/projects/${id}/segments/${key}/revise`, { method: "POST", body: { instruction, selection } }),
-  tool: (id, key, tool, selection = "") => request(`/projects/${id}/segments/${key}/tool`, { method: "POST", body: { tool, selection } }),
+  tool: (id, key, tool, selection = "", strength = 2) => request(`/projects/${id}/segments/${key}/tool`, { method: "POST", body: { tool, selection, strength } }),
   regenerate: (id, key) => request(`/projects/${id}/segments/${key}/regenerate`, { method: "POST" }),
   edit: (id, key, content) => request(`/projects/${id}/segments/${key}`, { method: "PUT", body: { content } }),
   approve: (id, key, approved) => request(`/projects/${id}/segments/${key}/approve` + qs({ approved }), { method: "POST" }),
@@ -110,6 +120,11 @@ export const api = {
   setIncluded: (id, key, included) => request(`/projects/${id}/structure/included/${key}` + qs({ included }), { method: "PUT" }),
   proposeParts: (id, title, purpose) => request(`/projects/${id}/structure/propose`, { method: "POST", body: { title, purpose } }),
   writeSegment: (id, key) => request(`/projects/${id}/segments/${key}/write`, { method: "POST" }),
+
+  // ---- where the evidence comes from (source modes and the reading list of online sources)
+  setSourceMode: (id, mode) => request(`/projects/${id}/source-mode` + qs({ mode }), { method: "PUT" }),
+  removeSource: (id, sid) => request(`/projects/${id}/sources/${sid}`, { method: "DELETE" }),
+  pinSource: (id, sid, pinned) => request(`/projects/${id}/sources/${sid}/pin` + qs({ pinned }), { method: "PUT" }),
 
   // ---- format an existing article
   formatUpload: (file) => request("/format", { method: "POST", form: files([file], "file") }),

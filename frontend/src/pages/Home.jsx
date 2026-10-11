@@ -47,8 +47,8 @@ export default function Home({ navigate, health }) {
         <div className="row rise" style={{ "--i": 3, marginTop: 28 }}>
           <Button variant="primary" size="lg" iconRight="arrow" onClick={() => navigate(null, "new")}>Begin a new article</Button>
           <Button size="lg" icon="file" onClick={() => navigate(null, "format")} title="Typeset a finished article in RAF's templates. Nothing is rewritten.">Format an existing article</Button>
-          {health && !health.ollama && <span className="badge bad">Start Ollama to fabricate</span>}
-          {health?.ollama && !health.model_available && <span className="badge warn">Run: ollama pull {health.model}</span>}
+          {health && !health.ollama && !health.ready && <span className="badge bad">Start Ollama to fabricate</span>}
+          {health?.ollama && !health.model_available && !health.ready && <span className="badge warn">Run: ollama pull {health.model}</span>}
         </div>
       </section>
 

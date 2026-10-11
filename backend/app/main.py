@@ -11,7 +11,7 @@ from . import llm, writer
 from .config import settings
 
 # Bump whenever the backend changes in a way the UI depends on; the UI warns when the running server is older.
-API_VERSION = "1.7.0"
+API_VERSION = "1.8.2"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 app = FastAPI(title="RAF — Research Article Fabricator", version=API_VERSION)

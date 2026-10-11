@@ -23,8 +23,8 @@ work together. No dates are given, because speed depends on how much time goes i
 | **1.5** ✅ released | Project memory | Library page, Project History, Article Revisions; added on request: Settings page, four new themes, admin lock | M + M + L + M |
 | **1.6** ✅ released | Segment freedom | Rename segments, custom segments, add / remove / reorder segments later; added on request: Custom theme from one colour, resizable and tidied sidebar | S + L + M + M |
 | **1.7** ✅ released | Publishing | LaTeX export, Format an existing article | M + L |
-| **1.8** | Open research and the Window | Articles without reference files, live view of the writing | L + L |
-| **1.9** | Quality | Article level Q1–Q4, Humanize 2, Integrity Report image | M + L + M |
+| **1.8** ✅ released (1.8.1 adds cloud models) | Open research and the Window | Articles without reference files, live view of the writing; add-on: cloud models through your own API keys | L + L |
+| **1.9** | Quality | Article level Q1–Q4, Humanize 2 (engine delivered early in 1.8.2), Integrity Report image | M + L + M |
 | **2.0** | The suite | New Hub home page, TextAI Tools, Data Analyzer | S + L + L |
 
 ## Where each request went
@@ -392,6 +392,80 @@ segment stay the same; only the name changes.
 
 ## Version 1.8 — Open research and the Window
 
+**Status: done.** Covered by `backend/tests/test_research_window.py`. Checked live as well: text streaming from the
+real model, the Window filling in the browser during a real revision (and when the page is opened mid-run), a real
+OpenAlex search, and a real open-access paper downloaded and read in full.
+
+**Built differently from the plan:**
+
+* In a Research-only article, Wikipedia and general web pages are left out altogether. The plan let them "inform
+  background"; keeping them out is the only way to be sure they are never cited.
+* The label on each sheet is the step RAF already reports in the Console, not a fixed list of phase names.
+* The Window also shows revisions started in the Studio.
+* The estimate was not refined with the number of words written; it still works by stage and segment.
+
+**Not done or not checked in 1.8:**
+
+* A complete Research-only article has not been written with the real model. The pipeline was run end to end with
+  stand-ins for the model and the databases, and each real piece was checked on its own.
+* Unpaywall returned nothing in the live check, most likely because the default contact address is a placeholder.
+  Set `RAF_CONTACT_EMAIL` to a real address.
+* The second research round and the reading-list page were checked in tests, not in the browser.
+* Corrections appearing struck through on a sheet were not seen live; the revision used for the live check made none.
+
+**Added on request after 1.8 (released as 1.8.1): cloud models through your own API keys.**
+
+What was asked for: a place in the language-model settings to enter the API key of any LLM (Gemini, NVIDIA, GPT,
+Claude and others), stored encrypted; several keys at once for more agents and more speed; the models shown with a
+logo under the agents box on the Segments page; and rules so that each model is used in the way that suits it.
+
+What was built:
+
+* **Settings → Language model → Cloud models.** Add, test, switch off and remove keys. The provider is recognised from
+  the key. Each key has a model (with the provider's real model list one click away), 1 to 4 agents, and a role:
+  everything, writing only or checks only. Up to 12 keys; RAF runs at most 8 agents at once.
+* **Encrypted storage** (`vault.py`): Windows data protection on Windows, an AES key file elsewhere. The key is never
+  sent back to the browser, is removed from error messages, and is covered by the admin lock.
+* **Who writes:** This PC only, This PC + cloud, or Cloud only.
+* **Routing and failover** (`llm.py`): cloud keys are extra agents; a rejected key is switched off, a rate-limited one
+  rests, a declined request goes to another model, and the local model takes over when no cloud model is left.
+* **Rules per provider** (`providers.py`): one output contract for all; Claude through Anthropic's SDK with effort
+  instead of temperature and Anthropic's refusal fallback; the other providers through their OpenAI-compatible API,
+  with parameters a model rejects dropped or renamed on the fly and remembered.
+* **Segments page:** the team that will write, a mark per provider, the number of agents, a notice that text is sent to
+  those providers, and a switch to leave them out of a run.
+* **Record:** the run log and History name the models; the AI-use statement says which ran locally and which online.
+
+Covered by `backend/tests/test_providers.py` (10 tests, no real provider involved). Checked live against a stand-in
+server on this PC that speaks the OpenAI chat API and rejects `max_tokens` like a reasoning model: adding a key in the
+browser, listing its models, the Test button, the team on the Segments page, and a real Studio revision written by the
+stand-in through its key, streamed.
+
+**Built differently from what was asked:**
+
+* "Neural network layers" cannot be added to a model that is reached through an API: its weights are not ours to
+  change. What was built instead is the layer RAF does control: the rules for how each model is called, which work it
+  gets, and what happens when it fails.
+* The marks on the Segments page are simple drawings in each provider's colour, made for RAF. They are not the
+  official logos, which are trademarks and could not be redrawn faithfully.
+* This goes against rule 7 below ("everything still runs on the machine itself") on purpose and only when you add a
+  key. As that rule requires, it is named in the interface and can be switched off (mode *This PC only*, or per run).
+
+**Not done or not checked in 1.8.1:**
+
+* **No real provider was called.** No real API key was available, and entering one is yours to do. The Claude path was
+  tested against a stand-in for Anthropic's SDK, the others against stand-in servers. The first real call to each
+  provider is therefore the real test: use the **Test** button after adding a key.
+* The default model names for OpenAI, Gemini, NVIDIA, Groq, Mistral, DeepSeek and OpenRouter come from memory and may
+  be out of date. Use **List** to pick a model the key really offers.
+* A complete article has not been written with cloud agents, and the mix of local and cloud agents was not timed. The
+  time estimate assumes a speed for cloud models; it is rough.
+* RAF does not show what a run costs, only how many requests each key answered.
+* Embeddings for retrieval still come from Ollama only (or TF-IDF + BM25 without it).
+* The encryption was exercised on Windows only. The macOS / Linux path (AES key file) is written but was not run.
+* Azure OpenAI, Amazon Bedrock and Google Vertex use other sign-in schemes and are not supported; a gateway that
+  speaks the OpenAI chat API in front of them works as *Other*.
+
 **Goal:** RAF can start from a title alone, and you can watch it think.
 
 ### Articles without reference files (request 3) — L
@@ -488,6 +562,54 @@ the standard that journals of a given tier usually expect. The setting is called
 * **In the report.** The integrity report shows which of the tier's expectations the article meets.
 
 ### Humanize 2 (request 5) — L
+
+**Status: the engine was built early, in 1.8.2, together with the other text tools, after you reported that Humanize
+and the tools did not work on long text.** What is done and what is still open is listed first; the original plan
+follows unchanged for reference.
+
+*Why they failed.* The text tools sent the whole section to the model in one request. The answer was cut off at the
+output limit, or the model summarised, and nothing checked the result. Humanize had the opposite fault: its gate
+(length within ±15 %, the style score must rise, 70 % of key terms kept, propositions extracted by the model) rejected
+most rewrites, so most paragraphs were returned unchanged.
+
+*Done in 1.8.2* (`backend/app/textops.py`, 26 tests in `backend/tests/test_textops.py`):
+
+* One engine for all eight tools, working paragraph by paragraph, in parallel, on text of any length.
+* Diagnosis that points at the sentence (points 1 and 2 of the plan, word and sentence level).
+* A rule layer that always produces a result; citation repair; a gate with hard checks and a fidelity check by the
+  model (point 7); retries that carry the reason; selection of the best passing rewrite.
+* A check for the replacement habit (point 5): a rewrite that brings in new stock wording is rejected.
+* Cutting is allowed (point 6): the length window is per tool, and filler is removed by rule.
+* Three strengths in the Studio, and a report of what the last tool did.
+
+Checked with the real local model (`gemma4:12b`) on a 230-word sample: all eight tools changed the text and kept every
+citation and number; Humanize was also run from the Studio in the browser. Reading those results by hand found three
+faults that the first version of the gate let through, and each now has a check and a test: a sentence whose meaning
+was reversed, plain words replaced by heavy ones in Formalize, and text copied in from the neighbouring paragraph.
+
+*Asked for and not built, with the reason:*
+
+* **"ChatGPT's and Claude's humanizing algorithms."** Neither company publishes one, so there is nothing to add. What
+  those models have is writing ability, and RAF uses it when you add their API key (1.8.1): the rewriting step is then
+  done by that model, inside the same checks.
+* **"Open-source algorithms and ML layers."** The measures used are the ones from the open literature: sentence-length
+  variation, moving-average type–token ratio, reading ease, a catalogue of formulaic patterns, fuzzy sentence
+  matching, and embedding similarity when an embedding model is installed. I did not add a downloaded paraphrasing
+  network: such models rewrite without regard to citations, numbers or claims, which is the opposite of what a
+  research article needs, and they would add gigabytes to the install.
+* **No promise about AI detectors.** Humanize improves how the text reads. It was not tested against any detector and
+  makes no claim about one.
+
+*Still open from the plan below (stays in 1.9):* habits across paragraphs and across the article (points 1 and 3 at
+paragraph and article level), edits smaller than a paragraph (point 4), the fuller field profile (point 8), the
+before-and-after view with accept and reject per change, and the fixed test set of paragraphs scored on every change.
+
+*Not checked in 1.8.2:* a long real section end to end with the real model (long text was tested with a stand-in
+model, the real model on two paragraphs per tool); the tools with a cloud model; a quality comparison beyond my own
+reading of the outputs. On the test PC a paragraph took about 40 seconds with most tools, about a minute with Expand and over two minutes with
+Strengthen, so long sections take many minutes.
+
+*The original plan:*
 
 I know of no published "Claude humanizing algorithm", so I have read this as: make Humanize work the way a careful
 human editor works. That means finding the specific habits that make text sound machine-written, fixing each by

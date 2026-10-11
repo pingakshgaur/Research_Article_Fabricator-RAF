@@ -43,9 +43,12 @@ def segment_or_404(p: Project, key: str):
     return p.segments[key]
 
 
-def engine_ready() -> dict:
-    """Raise 503 unless Ollama is running and the chosen model is installed."""
+def engine_ready(cloud: bool = True) -> dict:
+    """Raise 503 unless something can write: a cloud model the user added a key for (when `cloud` allows them), or
+    Ollama running with the chosen model installed."""
     health = llm.health()
+    if cloud and health.get("cloud", {}).get("engines"):
+        return health
     if not health["ollama"]:
         raise HTTPException(503, "Ollama is not reachable. Start it with `ollama serve`.")
     if not health["model_available"]:

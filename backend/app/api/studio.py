@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
-from .. import history, store, structure, writer
+from .. import history, store, structure, textops, writer
 from ..models import ManualEdit, Project, ReviseRequest, Segment, ToolRequest
 from .common import get, segment_free, segment_or_404, start_segment_job, view
 
@@ -26,12 +26,11 @@ def revise(pid: str, key: str, body: ReviseRequest):
 def tool(pid: str, key: str, body: ToolRequest):
     p = get(pid)
     seg = segment_or_404(p, key)
-    label = f"{body.tool.replace('_', ' ').title()} · {seg.title}"
-    if body.tool == "humanize":
-        start_segment_job(pid, key, label, lambda: writer.humanize_segment(pid, key, body.selection))
-    else:
-        instruction = writer.TOOL_INSTRUCTIONS[body.tool]
-        start_segment_job(pid, key, label, lambda: writer.revise_segment(pid, key, instruction, body.selection, reason=f"tool: {body.tool}"))
+    if structure.blueprint_for(p, key).special in {"title", "keywords", "references", "manual"} and key in {"title", "keywords", "references"}:
+        raise HTTPException(422, f"Text tools do not apply to the {seg.title}. Use Revise instead.")
+    if not seg.content.strip():
+        raise HTTPException(422, "There is no text to work on yet.")
+    start_segment_job(pid, key, f"{textops.TOOLS[body.tool]['label']} · {seg.title}", lambda: writer.tool_segment(pid, key, body.tool, body.selection, body.strength))
     return view(get(pid))
 
 

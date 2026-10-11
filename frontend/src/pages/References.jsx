@@ -2,6 +2,12 @@ import { useRef, useState } from "react";
 import { api } from "../api.js";
 import { Button, Icon, Ring, Spinner, useToast } from "../ui.jsx";
 
+const MODES = [
+  { key: "references", name: "My references", blurb: "RAF writes from the 10–20 articles you upload, and may add online sources beside them." },
+  { key: "mixed", name: "Mixed", blurb: "Upload what you have, from one file upward. RAF tops it up with a deeper online search and reads the open-access papers in full." },
+  { key: "research", name: "Research only", blurb: "No files. RAF builds the reading list itself from scholarly databases and shows it to you before writing." },
+];
+
 function Dropzone({ accept, onFiles, title, subtitle, disabled }) {
   const [over, setOver] = useState(false);
   const input = useRef(null);
@@ -23,7 +29,9 @@ function Dropzone({ accept, onFiles, title, subtitle, disabled }) {
 export default function References({ project, setProject, navigate, health }) {
   const toast = useToast();
   const [uploading, setUploading] = useState(false);
-  const min = health?.limits?.min_references ?? 10;
+  const usual = health?.limits?.min_references ?? 10;
+  const mode = project.source_mode || "references";
+  const min = { references: usual, mixed: 1, research: 0 }[mode];     // how many files this source mode needs
   const max = health?.limits?.max_references ?? 20;
   const count = project.references.length;
 
@@ -55,15 +63,33 @@ export default function References({ project, setProject, navigate, health }) {
       <div className="eyebrow rise">Step 02 — References</div>
       <h1 className="display rise" style={{ "--i": 1, fontSize: "clamp(34px,4.4vw,56px)" }}>Give RAF its <em>reading list.</em></h1>
       <p className="lede rise" style={{ "--i": 2 }}>
-        Upload {min}–{max} reference articles for <b>“{project.title}”</b>. RAF reads them in full, extracts citation metadata and uses
-        them as the primary evidence base.
+        {mode === "research"
+          ? <>RAF will find the sources for <b>“{project.title}”</b> itself. You can still add files; each one you upload is read in full.</>
+          : <>Upload {mode === "mixed" ? "at least one reference article" : `${min}–${max} reference articles`} for <b>“{project.title}”</b>. RAF reads them in full, extracts
+            citation metadata and uses them as {mode === "mixed" ? "the core of" : "the primary"} evidence base.</>}
       </p>
+
+      <div className="mode-grid rise" style={{ "--i": 3 }}>
+        {MODES.map((m) => (
+          <button key={m.key} type="button" className={`mode-card ${mode === m.key ? "on" : ""}`} aria-pressed={mode === m.key} disabled={!!project.busy}
+            onClick={async () => { if (mode !== m.key) try { setProject(await api.setSourceMode(project.id, m.key)); } catch (e) { toast(e.message, "error"); } }}>
+            <b>{m.name}</b>
+            <span>{m.blurb}</span>
+          </button>
+        ))}
+      </div>
+      {mode !== "references" && (
+        <p className="muted rise" style={{ fontSize: 12.5, margin: "10px 0 0" }}>
+          Sources found online are read from their abstract unless a legal open-access copy exists, and an article built on fewer full texts is thinner.
+          RAF says in the Methodology exactly how far its reading went. Online research goes out to public scholarly databases.
+        </p>
+      )}
 
       <div className="row rise" style={{ "--i": 3, margin: "30px 0 18px", gap: 26 }}>
         <div className="ref-counter">
-          <Ring value={count} max={min} label={count} />
+          <Ring value={count} max={Math.max(1, min)} label={count} />
           <div>
-            <div style={{ fontWeight: 560 }}>{count < min ? `${min - count} more needed` : count >= max ? "Maximum reached" : "Ready — add more if you like"}</div>
+            <div style={{ fontWeight: 560 }}>{count < min ? `${min - count} more needed` : count >= max ? "Maximum reached" : count === 0 ? "No files — RAF will research the topic" : "Ready — add more if you like"}</div>
             <div className="muted" style={{ fontSize: 12.5 }}>PDF · DOCX · Markdown · TXT, up to {max} files</div>
           </div>
         </div>

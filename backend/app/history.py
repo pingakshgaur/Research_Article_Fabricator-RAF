@@ -129,9 +129,11 @@ def ai_statement(p: Project) -> dict:
         total_words += len(b)
         changed_words += (1 - difflib.SequenceMatcher(None, a, b, autojunk=False).ratio()) * len(b) if a != b else 0
     tools = sorted({e["summary"].split(" applied to ")[0] for e in events if e["kind"] == "segment.tool"})
-    models = sorted({e["meta"]["model"] for e in events if e["kind"] in {"run.started", "run.resumed"} and e["meta"].get("model")}) or [llm_settings.get()["model"]]
+    runs = [e["meta"] for e in events if e["kind"] in {"run.started", "run.resumed"}]
+    cloud = sorted({m for r in runs for m in r.get("cloud_models", [])})      # models reached through an API key, with their provider
+    models = sorted({m for r in runs for m in r.get("models", [r["model"]] if r.get("model") else [])}) or ([] if cloud else [llm_settings.get()["model"]])
     facts = {
-        "raf_version": API_VERSION, "models": models, "drafted_by_raf": drafted, "written_by_author": human, "tools_used": tools,
+        "raf_version": API_VERSION, "models": models, "cloud_models": cloud, "drafted_by_raf": drafted, "written_by_author": human, "tools_used": tools,
         "revisions_requested": sum(e["kind"] == "segment.revised" for e in events),
         "manual_edits": sum(e["kind"] == "segment.edited" for e in events),
         "share_changed_by_hand": round(100 * changed_words / total_words) if total_words else 0,
@@ -143,7 +145,9 @@ def ai_statement(p: Project) -> dict:
         return {"statement": "", "facts": facts}
     parts = [
         f"During the preparation of this work the author(s) used RAF (Research Article Fabricator, version {API_VERSION}), a tool that runs "
-        f"the {_join(models)} language model on the author's own computer, to draft the following parts of the manuscript: {_join(drafted)}."
+        + " and ".join(([f"the {_join(models)} language model on the author's own computer"] if models else [])
+                       + ([f"the {_join(cloud)} language model{'s' if len(cloud) > 1 else ''} through the provider's online service"] if cloud else []))
+        + f", to draft the following parts of the manuscript: {_join(drafted)}."
     ]
     if facts["uploaded_references"] or facts["online_sources"]:
         src = [f"{facts['uploaded_references']} reference documents supplied by the author(s)"] if facts["uploaded_references"] else []

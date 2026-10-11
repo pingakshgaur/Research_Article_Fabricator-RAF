@@ -29,7 +29,7 @@ from contextlib import contextmanager
 import numpy as np
 
 from . import analysis as analysis_mod
-from . import citations, estimate, factcheck, history, jobs, live, llm, llm_settings, originality, research, revisions, store, structure, style
+from . import citations, estimate, factcheck, history, jobs, live, llm, llm_settings, originality, providers, research, revisions, store, structure, style, textops
 from .blueprints import COMMON_RULES, Blueprint, Move, tone_instruction
 from .checkpoints import Checkpoints, signature
 from .ingest import chunk_text, heuristic_metadata, llm_metadata, read_any, strip_back_matter
@@ -43,7 +43,7 @@ AUTHOR_SYSTEM = (
     "You are RAF, a senior academic author and peer reviewer who writes publication-ready scholarly articles. "
     "You write in fluent, natural, human academic English with precise terminology and original phrasing."
 )
-RUN_OPTIONS = ("web_research", "data_analysis", "depth", "agents", "hallucination_filter", "style_pass")
+RUN_OPTIONS = ("web_research", "data_analysis", "depth", "agents", "cloud", "hallucination_filter", "style_pass")
 _lane = threading.local()
 _checkpoints: dict[str, Checkpoints] = {}
 _checkpoints_lock = threading.Lock()
@@ -397,12 +397,16 @@ def generate_article(pid: str, req: GenerateRequest) -> None:
     if any(structure.cites(ws.project, k) for k in keys) and "references" not in keys:
         keys.append("references")
         ws.log("References added automatically because the selected segments cite sources")
-    llm.runtime.configure(req.agents, notify=ws.log)
+    llm.runtime.configure(req.agents, notify=ws.log, cloud=req.cloud)
+    team, agents = llm.runtime.team(), llm.runtime.capacity
+    crew = " + ".join(f"{e['model']} ×{e['agents']}" + (" on this PC" if e["local"] else f" ({e['name']})") for e in team)
     if not req.resume:   # a new run replaces drafts, so the article as it stands is kept as a revision first
         revisions.snapshot(pid, "Before fabrication run", auto=True, trigger="run")
     history.record(pid, "run.resumed" if req.resume else "run.started",
-                   f"Fabrication {'resumed' if req.resume else 'started'} — {len(keys)} segments · {req.depth} · {req.agents} agent{'s' if req.agents > 1 else ''}",
-                   model=llm_settings.get()["model"], **{k: getattr(req, k) for k in RUN_OPTIONS}, segments=keys)
+                   f"Fabrication {'resumed' if req.resume else 'started'} — {len(keys)} segments · {req.depth} · {agents} agent{'s' if agents > 1 else ''}",
+                   model=llm_settings.get()["model"], models=[e["model"] for e in team if e["local"]],
+                   cloud_models=[f"{e['model']} ({providers.CATALOG[e['provider']]['company']})" for e in team if not e["local"]],
+                   **{k: getattr(req, k) for k in RUN_OPTIONS}, segments=keys)
     now = time.time()
 
     def init(p: Project):
@@ -425,19 +429,20 @@ def generate_article(pid: str, req: GenerateRequest) -> None:
             p.run = RunInfo(first_started=now)
         p.run.status, p.run.session_started, p.run.finished = "running", now, None
         p.run.sessions += 1
-        p.run.agents = req.agents
+        p.run.agents = agents
     store.mutate(pid, init)
     if not req.resume:
         for k in keys:
             ws.cp.clear_segment(k)
     ws.log(("▶ Resuming from the last checkpoint" if req.resume else "▶ Starting fabrication")
-           + f" · {req.agents} agent{'s' if req.agents > 1 else ''} · {req.depth} mode")
+           + f" · {agents} agent{'s' if agents > 1 else ''} · {req.depth} mode")
+    ws.log(f"Team: {crew}" + (" — text is sent to the cloud providers named here" if any(not e["local"] for e in team) else ""))
 
     try:
         estimate_run(ws, req, keys)
         build_corpus(ws, req)
         ws.begin_stage("writing")
-        run_segments(ws, keys, req.depth, req.agents)
+        run_segments(ws, keys, req.depth, agents)
         if req.depth == "thorough":
             review_and_fix(ws, keys)
     except SourcesReview as pause:
@@ -471,7 +476,8 @@ def estimate_run(ws: Workspace, req: GenerateRequest, keys: list[str]) -> None:
     """Probe the model speed (a few seconds) and publish the estimated fabrication time before any real work."""
     ws.stage("Estimating fabrication time", "estimate")
     try:
-        speed = estimate.probe_speed()
+        on_pc = any(e["local"] for e in llm.runtime.team())     # in cloud-only mode there is no local speed to measure
+        speed = estimate.probe_speed() if on_pc else {"tok_s": 0.0, "seconds": 0.0, "model": ""}
         estimate.remember_speed(speed["model"], speed["tok_s"])
         result = estimate.compute(ws.project, req, keys, speed)
     except Exception as exc:  # noqa: BLE001 - never let the estimate stop the article
@@ -1201,18 +1207,6 @@ def build_appendices(ws: Workspace, bp: Blueprint, depth: str):
 
 
 # ====================================================================== revision & text tools
-TOOL_INSTRUCTIONS = {
-    "expand": "Expand this text by roughly 40%: deepen the argument, add supporting evidence with citations, and add a well-developed example or counterpoint.",
-    "condense": "Condense this text by roughly 35% without losing any key argument, finding or citation. Remove redundancy.",
-    "formalize": "Raise the academic register: more precise terminology, measured hedging, and tighter logical connectives.",
-    "simplify": "Improve clarity for a broad academic audience: shorter sentences, plainer wording, same meaning and citations.",
-    "add_citations": "Strengthen the evidential basis: add citations from the evidence to every claim that currently lacks support, adding brief supporting detail where helpful.",
-    "polish": "Polish grammar, flow and transitions between sentences and paragraphs without changing content.",
-    "humanize": "Make the prose read as naturally human-written: vary rhythm and sentence openings, remove formulaic or repetitive phrasing, keep the scholarly tone.",
-    "strengthen_argument": "Sharpen the argument: make claims more specific, make the logical chain explicit, and address an obvious counter-argument using the evidence.",
-}
-
-
 def revise_segment(pid: str, key: str, instruction: str, selection: str = "", reason: str = "revision") -> None:
     ws = Workspace(pid)
     llm.runtime.notify = ws.log
@@ -1298,30 +1292,61 @@ def review_and_fix(ws: Workspace, keys: list[str], apply_fixes: bool = True) -> 
     return report
 
 
-def humanize_segment(pid: str, key: str, selection: str = "") -> None:
-    """Studio Humanize tool: paragraph-level rewriting with a fact inventory and verification gate."""
+def tool_segment(pid: str, key: str, tool: str, selection: str = "", strength: int = 2) -> None:
+    """A Studio text tool on a segment or on the selected passage: paragraph by paragraph through textops.run."""
     ws = Workspace(pid)
-    llm.runtime.notify = ws.log
     p = ws.project
+    llm.runtime.ensure(int(p.options.get("agents", 1)), notify=ws.log, cloud=bool(p.options.get("cloud", True)))
     bp = blueprint_for(p, key)
     seg = p.segments[key]
+    spec = textops.TOOLS[tool]
     ws.set_segment(key, status="revising")
-    ws.stage(f"Humanizing {bp.title}", "revising", key=key)
+    ws.stage(f"{spec['label']} · {bp.title}", "revising", key=key)
     try:
         target = selection.strip() if selection.strip() and selection.strip() in seg.content else seg.content
-        new, report = style.humanize_text(
-            target, title=p.title, section=bp.title, tone_rule=tone_instruction(p.tone),
-            profile=style.field_profile(ws.dir / "index"), deep=True, progress=ws.log)
+        cites = bp.citations and bp.needs_evidence and bool(ws.index.chunks)
+
+        def evidence_for(passage: str) -> tuple[str, set[str]]:
+            """The passages of the sources that bear on this paragraph, and the labels that may therefore be cited."""
+            chunks = retrieve(ws, [passage[:600], f"{bp.title} {p.topic or p.title}"], k_each=4, cap=5)
+            return evidence_block(chunks, p), {c.label for c in chunks}
+
+        new, report = textops.run(
+            tool, target, strength=strength, title=p.title, section=bp.title, purpose=bp.description, tone_rule=tone_instruction(p.tone),
+            profile=style.field_profile(ws.dir / "index"), evidence_for=evidence_for if spec["adds"] and cites else None, progress=ws.log)
+        evidence = report.pop("evidence")
+        line = textops.summary(report)
+        ws.log(f"{spec['label']} · {bp.title}: {line}")
+        if not report["changed"]:
+            why = (report["kept"][0]["reasons"] or ["nothing to change"])[0] if report["kept"] else "no paragraph long enough to work on"
+            ws.log(f"{spec['label']} left {bp.title} as it was ({why})")
+            q = seg.quality.model_copy()
+            q.tool = {**report, "at": time.time()}
+            ws.set_segment(key, quality=q, status="draft", error="")
+            return
         content = seg.content.replace(target, new, 1) if target is not seg.content else new
-        ws.log(f"Humanize · {bp.title}: rewrote {report['rewritten']}/{report['attempted']} paragraph(s) · style score "
-               f"{report['score_before']} → {report['score_after']} · citations kept {report['citations_preserved']} · numbers kept {report['numbers_preserved']}")
-        q = seg.quality.model_copy()
-        q.style = style.metrics(content)
-        q.humanize = {**report, "at": time.time()}
-        ws.set_segment(key, content=content, quality=q, status="draft", error="",
-                       versions=[*seg.versions, Version(content=content, reason=f"humanize: {report['rewritten']}/{report['attempted']} paragraphs")][-20:])
-        history.record(pid, "segment.tool", f"Humanize applied to {seg.title} — {report['rewritten']} of {report['attempted']} paragraphs rewritten",
-                       actor="RAF", segment=key, **history.words_delta(seg.content, content))
+        if key == "results" and p.analysis:
+            content = _restore_placeholders(content, AnalysisResult(tables=seg.tables, figures=seg.figures))
+        reason = f"tool: {tool}" if tool != "humanize" else f"humanize: {report['rewritten'] + report['rules_only']}/{report['attempted']} paragraphs"
+        if spec["adds"] and report["citations_added"]:      # new sources were cited: the claims go through the hallucination filter like any draft
+            finalize(ws, key, content, "\n".join([evidence, seg.content]), reason=reason, depth="quick")
+            q = ws.project.segments[key].quality.model_copy()
+            q.tool = {**report, "at": time.time()}
+            ws.set_segment(key, quality=q)
+        else:                                               # nothing new is claimed: the gate in textops has already checked what was kept
+            q = seg.quality.model_copy()
+            q.words = len(re.sub(r"\[\[.*?\]\]|\[[RW]\d+.*?\]", "", content).split())
+            q.citations = len(citations.MARKER.findall(content))
+            q.readability = originality.readability(content) if q.words > 80 else None
+            q.flags = [f for f in q.flags if f["sentence"] in content]
+            q.style = style.metrics(content)
+            q.tool = {**report, "at": time.time()}
+            if tool == "humanize":
+                q.humanize = q.tool
+            ws.set_segment(key, content=content, quality=q, status="draft", error="", versions=[*seg.versions, Version(content=content, reason=reason)][-20:])
+            sync_references(pid)
+        history.record(pid, "segment.tool", f"{spec['label']} applied to {seg.title} — {line}", actor="RAF", segment=key, tool=tool, strength=strength,
+                       **history.words_delta(seg.content, content))
     except Exception as exc:  # noqa: BLE001
         ws.set_segment(key, status="draft", error=str(exc))
         raise
@@ -1330,7 +1355,7 @@ def humanize_segment(pid: str, key: str, selection: str = "") -> None:
 def regenerate_segment(pid: str, key: str) -> None:
     ws = Workspace(pid)
     p = ws.project
-    llm.runtime.ensure(int(p.options.get("agents", 1)), notify=ws.log)
+    llm.runtime.ensure(int(p.options.get("agents", 1)), notify=ws.log, cloud=bool(p.options.get("cloud", True)))
     ws.cp.clear_segment(key)
     write_segment(ws, key, p.options.get("depth", "thorough"))
 

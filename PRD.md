@@ -2,7 +2,7 @@
 
 ## RAF — Research Article Fabricator
 
-**Version:** 1.7.0  
+**Version:** 1.8.2  
 **Last Updated:** October 2026  
 **Status:** Active Development
 
@@ -51,7 +51,7 @@
 
 **RAF (Research Article Fabricator)** is a local, private web application that transforms a **research title and 10–20 uploaded reference articles** into a structured, publication-ready scholarly article. It reads your references, researches the topic across 8 scholarly databases, runs real statistics on user-provided or auto-sourced data, writes each article segment using rhetorical blueprints grounded in academic writing theory, verifies every claim against source evidence, and publishes the approved article as **DOCX, PDF, or Markdown**.
 
-All text generation runs entirely on the user's machine through **Ollama + `gemma4:12b`** — a 12-billion-parameter small language model (SLM). RAF uses **no API keys, no cloud LLM, and no telemetry**. All data remains local.
+All text generation runs entirely on the user's machine through **Ollama + `gemma4:12b`** — a 12-billion-parameter small language model (SLM). By default RAF uses **no API keys, no cloud LLM, and no telemetry**, and all data remains local. From 1.8.1 the user may add API keys of cloud models; only then, and only for those models, prompts leave the machine (§7.14f).
 
 ---
 
@@ -86,7 +86,7 @@ Empower researchers, academics, and scholars to produce high-quality, evidence-g
 
 ## 4. Core Design Principles
 
-1. **Privacy First** — No data leaves the user's machine. The writing model runs locally; only optional scholarly database queries are sent externally.
+1. **Privacy First** — By default no data leaves the user's machine: the writing model runs locally and only optional scholarly database queries are sent externally. Cloud models are strictly opt-in (the user adds a key), named wherever they are used, and can be switched off globally or per run.
 2. **Grounded Generation** — Every claim must be traceable to uploaded evidence or retrieved sources. Statistics come from real computations, never LLM hallucination.
 3. **Academic Rigour** — Writing follows established rhetorical models (Swales' CARS, Hopkins & Dudley-Evans, IMRaD) with discipline-specific conventions.
 4. **Graceful Degradation** — Every stage has fallbacks. A failing component degrades the output quality, but never stops the entire pipeline.
@@ -411,17 +411,19 @@ Four sequential layers before any drafted segment reaches the Studio:
 
 **Field Profiling:** Measures the same metrics on the user's uploaded references to calibrate drafts to the discipline's conventions (typical sentence length, variation, passive voice ratio).
 
-**Humanize Tool — Zero Content Loss Guarantee:**
-- Rewrites paragraph-by-paragraph to break formulaic patterns
-- Extracts a strict inventory: all citations, numbers, proper names, key terms, atomic propositions
-- A rewrite is accepted **only if:**
-  - All citation markers preserved
-  - All numbers match exactly
-  - Key technical terms retained
-  - Meaning preserved
-  - Length changes by ≤ ±15%
-  - Naturalness score improves
-- Otherwise the original paragraph is kept unchanged
+**Text-tool engine (1.8.2, `textops.py`)** — one engine for Expand, Condense, Formalize, Simplify, Add citations, Polish, Humanize and Strengthen:
+
+| Layer | What it does |
+|-------|--------------|
+| **Split** | Paragraph by paragraph (`ThreadPoolExecutor` over the engine pool); placeholders and headings set aside; paragraphs over 260 words in windows of about 150 words |
+| **Diagnose** | No model: style metrics, `tells()` (stock vocabulary, trailing -ing clauses, summing-up sentences, stacked hedges and other patterns), `rhythm_plan()` (which sentence to split, join or shorten), `informality()`, `uncited()`, reading ease |
+| **Rules** | Deterministic, meaning-safe edits: filler phrases, stock sentence openers, contractions, near-duplicate sentences |
+| **Rewrite** | One model call per paragraph with a measured brief; neighbours shown for flow only; evidence retrieved per paragraph for the tools that may add sources |
+| **Repair** | Dropped citation markers re-attached to the best-matching sentence; markers of sources not offered removed |
+| **Gate** | Hard checks: citations, numbers, names, content-word recall (formulaic words excluded), length window per tool and strength, no text borrowed from neighbours, no new stock wording, embedding similarity when an embedding model is installed. Then a fidelity check: the model compares original and rewrite and names contradictions and inventions; only findings quoting the rewrite count |
+| **Select** | Up to 2 attempts (3 at Strong), each retry carrying the rejection reason; best passing candidate kept; else rules-only; else unchanged with the reason reported |
+
+`strength` 1–3 scales targets (Expand ×1.2 / 1.4 / 1.7, Condense ×0.82 / 0.66 / 0.5, and so on). Tools that cited new sources hand the segment to `finalize` (hallucination filter); the others save directly. The report is stored in `QualityReport.tool`. The earlier Humanize gate (length within ±15 %, score must rise, 70 % term recall, model-extracted propositions) rejected most rewrites and is gone.
 
 ---
 
@@ -577,6 +579,32 @@ The Developer Tools drawer became one tab of a full **Settings** page (gear butt
 | **Checks** | Deterministic citation-versus-reference-list comparison (author–date and numbered) and per-section style metrics |
 | **Reference restyle (experimental)** | Crossref lookup per entry (DOI, or bibliographic search with a title-match threshold); identified entries re-formatted in APA / Harvard / Chicago; others untouched |
 | **Spacing fix** | Punctuation clean-up no longer removes the space in statistics such as "p = .05" (affected exports and stored drafts in earlier versions) |
+
+### 7.14e Source Modes & the Window (1.8)
+
+| Capability | Description |
+|------------|-------------|
+| **Source modes** | `Project.source_mode`: `references` (10–20 files), `mixed` (≥ 1 file), `research` (none; online research mandatory). Schema version 5 |
+| **Deeper research** | Second query round from model-proposed follow-ups; up to 60 sources kept; Research-only drops Wikipedia and general web results |
+| **Open-access full text** | `research.fetch_fulltext`: address from OpenAlex / Semantic Scholar / arXiv / Europe PMC, else Unpaywall by DOI; PDF ≤ 30 MB read with the normal PDF pipeline into `index/web_<id>.txt`; up to 12 papers; indexed like an uploaded reference (≤ 60 passages) |
+| **Reading-list approval** | Run pauses with `run.status = "review"` after research; sources can be removed or pinned; `sources_confirmed` continues. Pinned sources are always added to the evidence shown to the writer |
+| **Honest reporting** | Methodology protocol states databases, queries, rounds, sources kept, how many read in full and how many by abstract; project view carries `evidence` counts |
+| **Streaming** | `llm.streaming(sink)`: prose calls of the current thread stream from Ollama; JSON calls never do; a retry resets the passage |
+| **Live sheets** | `live.py` keeps the current text of each segment being written in memory; emits coalesced `delta` (≈ 8 / s), `sheet` and `edit` events, none persisted; late joiners get a snapshot in the stream's first message |
+| **Window view** | Read-only sheets per segment with phase label, live text, struck-through corrections and enlarge-on-click; Console view retained |
+
+### 7.14f Cloud Models through the User's API Keys (1.8.1)
+
+| Capability | Description |
+|------------|-------------|
+| **Key store** | `providers.py`, `<data_dir>/llm_keys.json`: up to 12 keys; per key provider, model, optional address, agents (1–4), role (all / writing / checks), enabled, status (ok / unchecked / rejected). Provider detected from the key prefix. On add, the provider's model list is requested to verify the key; a rejected key is not stored |
+| **Providers** | Claude through the official Anthropic SDK; OpenAI, Gemini, NVIDIA NIM, Groq, Mistral, DeepSeek, OpenRouter and any custom server through the OpenAI-compatible chat API |
+| **Rule profiles** | Shared output contract; JSON rule for checks; reasoning headroom per provider; Claude: no sampling parameters, `output_config.effort` medium / low, thinking left adaptive, server-side refusal fallback (`fallbacks: "default"`) on the models that support it; OpenAI-style: parameter negotiation (`max_completion_tokens`, temperature, `response_format`) learned per model at run time |
+| **Engine pool** | `llm._Runtime`: the local engine (1–3 agents) plus one engine per key; capacity = sum of agents, at most 8. Modes `local`, `hybrid`, `cloud`. A call takes the engine its thread used last when free, else the first free one (keys in list order, then local) |
+| **Failure rules** | auth / quota → key off and marked rejected; rate limit → key rests for `retry-after` (≤ 120 s); server or network trouble → back-off, off after repeated failures; refusal → another engine for that request; no cloud engine left → local model continues; local model unreachable while cloud engines work → left out |
+| **Per run** | `GenerateRequest.cloud` (default true), stored with the run options; team logged at the start; `run.started` History meta carries `models` and `cloud_models`; AI-use statement distinguishes local and online models |
+| **Estimate** | Lanes = all agents; cloud speed assumed (45 tok/s), flagged `speed_source = "assumed for cloud models"`; such runs are not used for calibration |
+| **UI** | Settings → Language model → Cloud models (key manager, Who writes, test, model list, rules); Segments page shows the team with a mark per provider under the agents box; status line shows `+ n cloud` |
 
 ### 7.15 Reliability & Fault Tolerance
 
@@ -766,7 +794,8 @@ QualityReport
 ├── grounding: dict         # hallucination filter summary
 ├── flags: list[dict]       # {sentence, verdict, reason}
 ├── style: dict             # naturalness metrics & score
-└── humanize: dict          # last Humanize run report
+├── humanize: dict          # last Humanize run report
+└── tool: dict              # report of the last text tool (textops.run)
 ```
 
 #### RunInfo
@@ -854,7 +883,7 @@ backend/data/projects/<project-id>/
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/api/projects/{pid}/segments/{key}/revise` | Natural-language revision (full segment or selection) |
-| `POST` | `/api/projects/{pid}/segments/{key}/tool` | Apply text tool (expand, condense, humanize, etc.) |
+| `POST` | `/api/projects/{pid}/segments/{key}/tool` | Apply a text tool: `tool`, optional `selection`, `strength` 1–3 |
 | `POST` | `/api/projects/{pid}/segments/{key}/regenerate` | Complete segment re-draft from RAG evidence |
 | `PUT` | `/api/projects/{pid}/segments/{key}` | Manual text edit (also creates front-matter if absent) |
 | `POST` | `/api/projects/{pid}/segments/{key}/approve` | Approve or un-approve a segment |
@@ -894,6 +923,13 @@ backend/data/projects/<project-id>/
 | `PUT` | `/api/settings/llm` | Update LLM parameters |
 | `DELETE` | `/api/settings/llm` | Reset to defaults |
 | `POST` | `/api/settings/llm/benchmark` | Run speed test |
+| `GET` | `/api/settings/llm/keys` | Cloud-model keys without secrets, mode, providers and their rules |
+| `POST` | `/api/settings/llm/keys` | Add a key (verified with the provider, stored encrypted) |
+| `PATCH` / `DELETE` | `/api/settings/llm/keys/{kid}` | Change model, agents, role, enabled, address / remove |
+| `PUT` | `/api/settings/llm/keys-order` | Priority order of the keys |
+| `PUT` | `/api/settings/llm/mode` | `local`, `hybrid` or `cloud` |
+| `POST` | `/api/settings/llm/keys/{kid}/test` | One very small real request through the key |
+| `GET` | `/api/settings/llm/keys/{kid}/models` | Models the key can use, asked from the provider |
 
 ---
 
@@ -979,11 +1015,14 @@ backend/data/projects/<project-id>/
 | `publisher.py` | 858 | DOCX/PDF/Markdown export, templates/palettes, document re-import |
 | `analysis.py` | 491 | Statistical analysis engine, tables, figures |
 | `research.py` | 400 | 8 online scholarly sources with library → REST fallbacks |
-| `style.py` | 324 | Naturalness scoring, field profiling, humanize tool |
+| `style.py` | — | Naturalness scoring, field profiling, fact inventory |
+| `textops.py` | — | Text-tool engine: diagnose, rules, rewrite, repair, gate, select |
 | `factcheck.py` | 344 | 4-layer hallucination filter, article-level review |
 | `estimate.py` | 287 | Speed probe, time estimation, self-calibration |
 | `blueprints.py` | 258 | 12 segment blueprints, rhetorical moves, tone meter, length profiles |
-| `llm.py` | 255 | Ollama client, agent slots, OOM fallback ladder |
+| `llm.py` | — | Every model call: engine pool (local model + cloud keys), routing, fallbacks, streaming |
+| `providers.py` | — | Cloud models: key store, provider rule profiles, Anthropic SDK and OpenAI-compatible calls |
+| `vault.py` | — | Encryption of stored API keys (DPAPI / Fernet) |
 | `ingest.py` | 255 | Document reading (PDF/DOCX/MD), metadata extraction, chunking |
 | `models.py` | 206 | Pydantic data models and request schemas |
 | `originality.py` | 196 | Shingle overlap, sentence similarity, automated rephrasing |
@@ -999,6 +1038,7 @@ backend/data/projects/<project-id>/
 | `structure.py` | — | One article's structure: titles, added segments, order, exclusions |
 | `latex.py` | — | LaTeX export |
 | `formatter.py` | — | Format an existing article: readers, outline, checks, restyle |
+| `live.py` | — | The Window: live sheets and their events |
 | `checkpoints.py` | 85 | Durable progress markers, resume from checkpoint |
 | `store.py` | 71 | Atomic file-system JSON persistence |
 | `config.py` | 66 | Environment variable configuration |
@@ -1030,7 +1070,8 @@ backend/data/projects/<project-id>/
 | Aspect | Implementation |
 |--------|---------------|
 | **Data Locality** | All project data stays on the user's machine. No cloud storage. |
-| **No API Keys** | Zero external LLM API keys. Ollama runs 100% locally. |
+| **API Keys** | None needed. Optional cloud-model keys are stored encrypted (`vault.py`: Windows DPAPI; elsewhere Fernet with an owner-only key file), never returned by the API (last four characters only), scrubbed from error messages and logs, guarded by the admin lock, and kept outside project folders and backups. `http://` addresses are refused except for localhost. |
+| **Cloud models** | Opt-in. Prompts for a cloud model contain passages of the references and the draft and go to that provider; the Segments page, the run log, History and the AI-use statement name the providers. Mode *This PC only* or `cloud: false` on a run sends nothing. |
 | **No Telemetry** | No analytics, no tracking, no phone-home. |
 | **Online Research** | Only optional scholarly database queries are sent externally. Toggleable per project. |
 | **CORS** | Configurable allowed origins (default: localhost ports) |

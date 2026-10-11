@@ -48,6 +48,7 @@ FILTER_OFF = 0.82              # hallucination filter adds ~18% to evidence segm
 STYLE_OFF = 0.92               # thorough style pass adds ~8%
 CONTENTION = {1: 1.0, 2: 1.45, 3: 1.95}   # per-segment slow-down when lanes share one GPU/CPU
 THROUGHPUT = {1: 1.0, 2: 1.38, 3: 1.54}   # total speed-up for independent calls (reference metadata)
+CLOUD_TOKS = 45.0              # assumed writing speed of a cloud model; not measured, so cloud estimates are rough
 
 PARSE_LOCAL = 3.0              # PDF/DOCX text extraction per reference
 PARSE_LLM = 38.0               # metadata call per reference
@@ -171,8 +172,16 @@ def compute(p, req, keys: list[str], speed: dict) -> dict:
     if tok_s <= 0:
         tok_s = history.get("last_speed", {}).get(speed.get("model", ""), 0.0) or REFERENCE_TOKS
         source = "previous run" if history.get("last_speed", {}).get(speed.get("model", "")) else "default"
-    factor = min(8.0, max(0.12, REFERENCE_TOKS / tok_s))
-    agents = max(1, min(3, int(req.agents)))
+    team = llm.runtime.team()
+    cloud_agents = sum(e["agents"] for e in team if not e["local"])
+    pc_agents = sum(e["agents"] for e in team if e["local"])
+    agents = max(1, min(3, pc_agents or 1))                    # agents sharing this PC: the tables below are about them
+    lanes = max(1, min(llm.MAX_AGENTS, cloud_agents + pc_agents))
+    contention, throughput = CONTENTION[agents], THROUGHPUT[agents]
+    if cloud_agents:      # cloud agents do not share this PC: the team's speed is the average of its lanes, and they do not slow each other
+        tok_s = (cloud_agents * CLOUD_TOKS + pc_agents * tok_s / contention) / (cloud_agents + pc_agents)
+        source, contention, throughput = "assumed for cloud models", 1.0, float(min(lanes, 4))
+    factor = min(8.0, max(0.02, REFERENCE_TOKS / tok_s))
     depth = req.depth
     cal = _calibration(depth)
     raw: dict[str, float] = {}
@@ -180,7 +189,7 @@ def compute(p, req, keys: list[str], speed: dict) -> dict:
     # ---- reading references (cached text from an earlier run is reused)
     index_dir = store.project_dir(p.id) / "index"
     new_refs = [r for r in p.references if not (r.status == "parsed" and (index_dir / f"ref_{r.id}.txt").exists())]
-    raw["parsing"] = len(new_refs) * (PARSE_LOCAL + PARSE_LLM * factor / THROUGHPUT[agents])
+    raw["parsing"] = len(new_refs) * (PARSE_LOCAL + PARSE_LLM * factor / throughput)
 
     # ---- online research (reused when the title/topic did not change)
     research_key = f"{p.title}|{p.topic}|{p.discipline}"
@@ -208,8 +217,8 @@ def compute(p, req, keys: list[str], speed: dict) -> dict:
             continue
         words = segment_words(p, k) if structure.lengthable(p, k) else 0
         base = segment_seconds(k, words, depth, req.hallucination_filter, req.style_pass) * factor
-        seg_est[k] = round(base * CONTENTION[agents] * cal["segments"], 1)
-    writing = simulate_lanes(p, keys, seg_est, agents, settled)
+        seg_est[k] = round(base * contention * cal["segments"], 1)
+    writing = simulate_lanes(p, keys, seg_est, lanes, settled)
 
     # ---- article review (thorough only)
     body_words = sum(segment_words(p, k) for k in keys if structure.lengthable(p, k) and k != "abstract")
@@ -224,14 +233,14 @@ def compute(p, req, keys: list[str], speed: dict) -> dict:
     return {
         "created": time.time(),
         "tok_s": round(tok_s, 2), "speed_source": source, "probe_seconds": speed.get("seconds", 0.0), "model": speed.get("model", ""),
-        "depth": depth, "agents": agents,
+        "depth": depth, "agents": agents, "lanes": lanes, "cloud_agents": cloud_agents,
         "elapsed_at_start": round(p.run.elapsed_before, 1),
         "remaining": round(remaining, 1),
         "total": round(p.run.elapsed_before + speed.get("seconds", 0.0) + remaining, 1),
         "stages": stages,
         "segments": seg_est,
         "raw": {**{k: round(v, 1) for k, v in raw.items()},
-                "segments": round(sum(seg_est.values()) / (CONTENTION[agents] * cal["segments"]), 1) if seg_est else 0.0},
+                "segments": round(sum(seg_est.values()) / (contention * cal["segments"]), 1) if seg_est else 0.0},
         "calibration": cal,
         "inventory": {"new_references": len(new_refs), "research_reused": research_reused, "index_reused": index_reused,
                       "segments_to_write": len(seg_est), "segments_kept": len(settled)},
@@ -242,7 +251,7 @@ def compute(p, req, keys: list[str], speed: dict) -> dict:
 def record(p) -> None:
     """Store estimated vs actual seconds of a completed run to calibrate future estimates."""
     est = p.run.estimate or {}
-    if not est.get("raw"):
+    if not est.get("raw") or est.get("cloud_agents"):     # cloud speed is assumed, not measured: such a run teaches nothing about this PC
         return
     agents = est.get("agents", 1)
     raw = est["raw"]

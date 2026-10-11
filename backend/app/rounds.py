@@ -133,7 +133,7 @@ def analyse(pid: str, rid: str) -> None:
     keys = editable(p)
     points, by = [], "model"
     try:
-        if llm.health()["model_available"]:
+        if llm.ready():
             points = split_with_model(p, rnd["comments"], keys)
     except Exception:  # noqa: BLE001 - the plain split below still gives the author something to work with
         points = []
@@ -172,8 +172,8 @@ def apply(pid: str, rid: str) -> None:
             return key, str(exc)[:200]
 
     agents = max(1, min(3, int(p.options.get("agents", 1))))
-    llm.runtime.ensure(agents)
-    with ThreadPoolExecutor(max_workers=agents) as pool:
+    llm.runtime.ensure(agents, cloud=bool(p.options.get("cloud", True)))
+    with ThreadPoolExecutor(max_workers=llm.runtime.capacity) as pool:
         for key, error in pool.map(work, by_segment.items()):
             for pt in by_segment[key]:
                 pt["state"] = "failed" if error else "applied"

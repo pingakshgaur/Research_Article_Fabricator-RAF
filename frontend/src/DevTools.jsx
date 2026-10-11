@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "./api.js";
+import { KeyManager } from "./Providers.jsx";
 import { Button, Icon, Select, Spinner, Toggle, useToast } from "./ui.jsx";
 
 const GROUPS = [
@@ -130,8 +131,10 @@ export default function DevTools({ open, onClose, inline = false, locked = false
 
         {!form ? <div className="empty"><Spinner /> Loading…</div> : (
           <div className={inline ? "settings-panel" : "drawer-body"}>
+            <KeyManager locked={locked} />
+
             <section className="card">
-              <h5>Model</h5>
+              <h5>Local model</h5>
               <Select value={form.model} onChange={set("model")} aria-label="Model"
                 options={[...new Set([form.model, ...installed.map((m) => m.name)])].map((name) => {
                   const m = installed.find((x) => x.name === name);

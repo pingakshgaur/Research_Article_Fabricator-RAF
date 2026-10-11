@@ -16,7 +16,7 @@ import Settings from "./pages/Settings.jsx";
 import Format from "./pages/Format.jsx";
 
 // Must match API_VERSION in backend/app/main.py.
-const EXPECTED_API = "1.7.0";
+const EXPECTED_API = "1.8.2";
 
 const STEPS = [
   { key: "setup", label: "Topic & title", hint: "What are we writing?" },
@@ -89,6 +89,8 @@ export default function App() {
   const [project, setProject] = useState(null);
   const [health, setHealth] = useState(null);
   const [events, setEvents] = useState([]);
+  const [sheets, setSheets] = useState({});      // the Window: live text of the segments being written (see live.py)
+  const sheetsRef = useRef({});
   const [theme, setTheme] = useState(currentMode);
   const [app, setApp] = useState(null);     // RAF settings from the server: { settings, palettes, locked, unlocked, info }
   const mainRef = useRef(null);
@@ -121,18 +123,31 @@ export default function App() {
   useEffect(() => {
     setProject(null);
     setEvents([]);
+    sheetsRef.current = {};
+    setSheets({});
+    let frame = 0;
+    const show = () => { if (!frame) frame = setTimeout(() => { frame = 0; setSheets({ ...sheetsRef.current }); }, 90); };   // a few repaints a second are plenty
+    const live = (ev) => {     // text streaming in, a finished passage, or a correction by a filter: none of these are log lines
+      const all = sheetsRef.current;
+      if (ev.kind === "hello") sheetsRef.current = Object.fromEntries(Object.entries(ev.sheets || {}).map(([k, s]) => [k, { ...s, marks: [] }]));
+      else if (ev.kind === "sheet" && ev.closed) delete all[ev.key];
+      else if (ev.kind === "sheet") all[ev.key] = { edits: [], ...all[ev.key], text: ev.text, live: ev.live || "", marks: [] };
+      else if (ev.kind === "delta") all[ev.key] = { text: "", edits: [], marks: [], ...all[ev.key], live: (all[ev.key]?.live || "") + ev.text };
+      else if (ev.kind === "edit") all[ev.key] = { text: "", live: "", ...all[ev.key], edits: [...(all[ev.key]?.edits || []), ev].slice(-6), marks: [...(all[ev.key]?.marks || []), ev] };
+      show();
+    };
     if (!route.id) return;
     refresh().then((p) => p && setEvents(p.log || [])).catch(() => navigate(null));
     let timer;
     const stop = api.events(route.id, (ev) => {
-      if (ev.kind === "hello") return;
+      if (["hello", "sheet", "delta", "edit"].includes(ev.kind)) return live(ev);
       setEvents((list) => [...list.slice(-600), ev]);
       if (["segment", "job", "done", "error", "stage", "checkpoint"].includes(ev.kind)) {
         clearTimeout(timer);
         timer = setTimeout(() => refresh().catch(() => {}), 250);
       }
     });
-    return () => { stop(); clearTimeout(timer); };
+    return () => { stop(); clearTimeout(timer); clearTimeout(frame); };
   }, [route.id, refresh]);
 
   const navigate = (id, view) => {
@@ -153,7 +168,7 @@ export default function App() {
     return i <= Math.max(reached, 2);
   };
 
-  const pageProps = { project, setProject, refresh, navigate, events, health };
+  const pageProps = { project, setProject, refresh, navigate, events, health, sheets };
   const segmentJobs = Object.values(project?.busy_segments || {});
 
   return (
@@ -175,8 +190,9 @@ export default function App() {
           </span>
         )}
         <span className="status-pill" title={health?.error || ""}>
-          <span className={`dot ${health?.ollama && health?.model_available ? "ok" : health ? "bad" : ""}`} />
+          <span className={`dot ${(health?.ready ?? (health?.ollama && health?.model_available)) ? "ok" : health ? "bad" : ""}`} />
           {!health ? "Checking engine…" : health.ollama ? (health.model_available ? `${health.model} · local` : `${health.model} not pulled`) : "Ollama offline"}
+          {health?.cloud?.engines?.length > 0 && ` + ${health.cloud.agents} cloud`}
         </span>
         <button className={`btn icon dev-button ${!route.id && route.view === "settings" ? "on" : ""}`} aria-label="Settings" title="Settings"
           onClick={() => navigate(null, "settings")}>

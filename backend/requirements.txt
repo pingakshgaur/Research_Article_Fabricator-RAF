@@ -6,6 +6,10 @@ pydantic>=2.7
 httpx>=0.27
 truststore>=0.9          # trust the OS certificate store for all HTTPS research calls
 
+# ---- Cloud language models (optional: only used when you add an API key in Settings) ----
+anthropic>=1.0           # Claude, through Anthropic's own SDK; every other provider is reached with httpx
+cryptography>=42; sys_platform != "win32"   # encrypts stored API keys (Windows uses its built-in data protection instead)
+
 # ---- Document reading / writing (PDF, DOCX, Markdown) ----
 pymupdf>=1.24            # primary PDF text + table extraction
 pypdf>=4.2               # fallback PDF reader

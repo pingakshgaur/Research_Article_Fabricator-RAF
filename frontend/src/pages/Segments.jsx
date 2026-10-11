@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api.js";
+import { Team } from "../Providers.jsx";
 import StructureEditor from "../StructureEditor.jsx";
 import { Button, Icon, Segmented, Toggle, useToast } from "../ui.jsx";
 
@@ -11,9 +12,9 @@ const PRESETS = {
 };
 
 const AGENTS = [
-  { value: 1, label: "Solo", hint: "One agent does everything in order. Lowest memory use." },
-  { value: 2, label: "Duo", hint: "Two agents: independent segments and evidence notes run side by side. Needs OLLAMA_NUM_PARALLEL ≥ 2." },
-  { value: 3, label: "Trio", hint: "Three agents in parallel. Fastest on GPUs with plenty of memory. Needs OLLAMA_NUM_PARALLEL ≥ 3." },
+  { value: 1, label: "Solo", hint: "One local agent does its work in order. Lowest memory use." },
+  { value: 2, label: "Duo", hint: "Two local agents: independent segments and evidence notes run side by side. Needs OLLAMA_NUM_PARALLEL ≥ 2." },
+  { value: 3, label: "Trio", hint: "Three local agents in parallel. Fastest on GPUs with plenty of memory. Needs OLLAMA_NUM_PARALLEL ≥ 3." },
 ];
 
 const TONE_ICONS = { academic: "formal", analytical: "target", persuasive: "send", explanatory: "simple", reflective: "human" };
@@ -44,6 +45,7 @@ export default function Segments({ project, setProject, navigate, health }) {
   const [data, setData] = useState(project.options?.data_analysis ?? true);
   const [depth, setDepth] = useState(project.options?.depth ?? "thorough");
   const [agents, setAgents] = useState(project.options?.agents ?? 1);
+  const [cloud, setCloud] = useState(project.options?.cloud ?? true);
   const [filter, setFilter] = useState(project.options?.hallucination_filter ?? true);
   const [stylePass, setStylePass] = useState(project.options?.style_pass ?? true);
   const [lengths, setLengths] = useState(() => ({ ...(project.segment_lengths || {}) }));
@@ -84,7 +86,7 @@ export default function Segments({ project, setProject, navigate, health }) {
       const ordered = catalogue.map((c) => c.key).filter((k) => selected.has(k));
       const planned = Object.fromEntries(lengthRows.map((c) => [c.key, wordsFor(c)]));
       setProject(await api.generate(project.id, {
-        segments: ordered, web_research: web, data_analysis: data, depth, agents, lengths: planned, resume: false,
+        segments: ordered, web_research: web || project.source_mode === "research", data_analysis: data, depth, agents, cloud, lengths: planned, resume: false,
         tone, hallucination_filter: filter, style_pass: stylePass,
       }));
       navigate(project.id, "processing");
@@ -95,7 +97,9 @@ export default function Segments({ project, setProject, navigate, health }) {
     }
   };
 
-  const engineReady = health?.ollama && health?.model_available;
+  const engineReady = health?.ready ?? (health?.ollama && health?.model_available);   // the local model, or a cloud model with a key
+  const cloudTeam = health?.cloud?.engines || [];
+  const cloudOnly = cloud && cloudTeam.length > 0 && health.cloud.mode === "cloud";
   const activeTone = tones.find((t) => t.key === tone.name);
   const level = tone.intensity <= 33 ? 0 : tone.intensity <= 66 ? 1 : 2;
 
@@ -236,7 +240,8 @@ export default function Segments({ project, setProject, navigate, health }) {
 
       <div className="card rise" style={{ "--i": 13, marginTop: 16 }}>
         <div className="grid-3" style={{ alignItems: "start" }}>
-          <Toggle checked={web} onChange={setWeb} label="Online research" hint="Scholarly databases & the open web" />
+          <Toggle checked={web || project.source_mode === "research"} onChange={(v) => project.source_mode !== "research" && setWeb(v)} label="Online research"
+            hint={project.source_mode === "research" ? "Always on: this article has no other sources" : "Scholarly databases & the open web"} />
           <Toggle checked={data} onChange={setData} label="Data analysis" hint="Statistics, tables & figures" />
           <div className="field">
             <label>Writing depth</label>
@@ -256,7 +261,18 @@ export default function Segments({ project, setProject, navigate, health }) {
           <label>Agents working in parallel</label>
           <div className="row wrap">
             <Segmented value={agents} onChange={setAgents} options={AGENTS.map((a) => ({ value: a.value, label: `${a.label} · ${a.value}` }))} />
-            <span className="muted" style={{ fontSize: 12, maxWidth: 520 }}>{AGENTS.find((a) => a.value === agents).hint}</span>
+            <span className="muted" style={{ fontSize: 12, maxWidth: 520 }}>
+              {cloudOnly ? "The local model is on standby in Cloud-only mode: this choice applies only if it has to step in." : AGENTS.find((a) => a.value === agents).hint}
+            </span>
+          </div>
+          <div className="team-box">
+            <div className="row between wrap">
+              <span className="field-label" style={{ margin: 0 }}>The models that will write this article</span>
+              {cloudTeam.length > 0
+                ? <Toggle checked={cloud} onChange={setCloud} label="Use my cloud models" />
+                : <button type="button" className="link" style={{ fontSize: 12 }} onClick={() => navigate(null, "settings")}>Add a cloud model with an API key</button>}
+            </div>
+            <Team health={health} agents={agents} cloud={cloud} />
           </div>
         </div>
       </div>
@@ -266,8 +282,8 @@ export default function Segments({ project, setProject, navigate, health }) {
       <div className="actions-bar">
         <Button variant="ghost" icon="back" onClick={() => navigate(project.id, "references")}>References</Button>
         <div className="row">
-          {!engineReady && <span className="badge bad">{health?.ollama ? `Pull ${health.model}` : "Ollama offline"}</span>}
-          <Button variant="primary" size="lg" icon="spark" disabled={!selected.size || starting || !engineReady} onClick={start}>
+          {!(cloud ? engineReady : health?.ollama && health?.model_available) && <span className="badge bad">{health?.ollama ? `Pull ${health.model}` : "Ollama offline"}</span>}
+          <Button variant="primary" size="lg" icon="spark" disabled={!selected.size || starting || !(cloud ? engineReady : health?.ollama && health?.model_available)} onClick={start}>
             {starting ? "Starting…" : `Fabricate ${selected.size} segment${selected.size === 1 ? "" : "s"}`}
           </Button>
         </div>

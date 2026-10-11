@@ -121,7 +121,7 @@ export default function StructureEditor({ project, setProject, open, onClose, he
 
   const rows = project.structure;
   const body = rows.filter((r) => !r.front);
-  const engineReady = health?.ollama && health?.model_available;
+  const engineReady = health?.ready ?? (health?.ollama && health?.model_available);   // the local model, or a cloud model with a key
   const fabricated = Object.values(project.segments).some((s) => s.content);
   const busyAll = !!project.busy;
   const run = async (key, fn, message) => {
@@ -166,7 +166,7 @@ export default function StructureEditor({ project, setProject, open, onClose, he
               <button type="button" className="link" onClick={() => run(r.key, () => api.renameSegment(project.id, r.key, ""), "Back to the usual title")}>use “{r.default_title}”</button>
             )}
             {!r.written && r.kind !== "manual" && fabricated && (
-              <button type="button" className="link" disabled={!engineReady || busyAll} title={engineReady ? undefined : "Start Ollama to write"}
+              <button type="button" className="link" disabled={!engineReady || busyAll} title={engineReady ? undefined : "Start Ollama or add a cloud model key to write"}
                 onClick={() => run(r.key, () => api.writeSegment(project.id, r.key), `RAF is writing ${r.title}`)}>write it now</button>
             )}
           </div>

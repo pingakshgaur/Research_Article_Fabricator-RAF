@@ -72,7 +72,7 @@ def test_statistics_keep_their_spacing():
 
 
 def test_resume_keeps_the_options_the_run_started_with():
-    stored = {"web_research": False, "data_analysis": True, "depth": "quick", "agents": 2, "hallucination_filter": False, "style_pass": False}
+    stored = {"web_research": False, "data_analysis": True, "depth": "quick", "agents": 2, "cloud": False, "hallucination_filter": False, "style_pass": False}
     def resolve(req):
         return req.model_copy(update={k: stored[k] for k in RUN_OPTIONS if k not in req.model_fields_set and k in stored})
     assert all(getattr(resolve(GenerateRequest(segments=["introduction"], resume=True)), k) == stored[k] for k in RUN_OPTIONS)

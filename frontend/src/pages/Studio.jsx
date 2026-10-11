@@ -1,19 +1,28 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api.js";
 import StructureEditor from "../StructureEditor.jsx";
-import { Button, Icon, Spinner, timeAgo, useToast } from "../ui.jsx";
+import { Button, Icon, Segmented, Spinner, timeAgo, useToast } from "../ui.jsx";
 import { fmtDuration } from "./Processing.jsx";
 
 const TOOLS = [
-  { key: "expand", label: "Expand", icon: "expand" },
-  { key: "condense", label: "Condense", icon: "condense" },
-  { key: "formalize", label: "Formalize", icon: "formal" },
-  { key: "simplify", label: "Simplify", icon: "simple" },
-  { key: "add_citations", label: "Add citations", icon: "cite" },
-  { key: "polish", label: "Polish", icon: "polish" },
-  { key: "humanize", label: "Humanize", icon: "human", hint: "Paragraph-by-paragraph rewrite; keeps every citation, number and claim or leaves the paragraph unchanged" },
-  { key: "strengthen_argument", label: "Strengthen", icon: "target" },
+  { key: "expand", label: "Expand", icon: "expand", hint: "Develops every paragraph (about +20 / +40 / +70 %). New facts come only from your sources and are cited." },
+  { key: "condense", label: "Condense", icon: "condense", hint: "Cuts every paragraph (to about 80 / 65 / 50 %) and keeps the findings and every citation." },
+  { key: "formalize", label: "Formalize", icon: "formal", hint: "Raises the register: no contractions or loose wording, exact terms, one hedge per claim." },
+  { key: "simplify", label: "Simplify", icon: "simple", hint: "Shorter sentences and plainer words; technical terms, meaning and citations stay." },
+  { key: "add_citations", label: "Add citations", icon: "cite", hint: "Finds statements without a citation and cites the source that supports them. Unsupported statements stay unmarked." },
+  { key: "polish", label: "Polish", icon: "polish", hint: "Grammar, punctuation and transitions. Your wording stays wherever it is already correct." },
+  { key: "humanize", label: "Humanize", icon: "human", hint: "Breaks uniform rhythm, removes formulaic wording and stock connectors. Citations, numbers and claims are kept." },
+  { key: "strengthen_argument", label: "Strengthen", icon: "target", hint: "Makes claims specific and the reasoning explicit; answers one obvious objection from your sources." },
 ];
+const STRENGTHS = [{ value: 1, label: "Light" }, { value: 2, label: "Balanced" }, { value: 3, label: "Strong" }];
+const TOOL_FACT = {      // the one figure that says what the last run of a tool achieved
+  condense: (t) => `${t.words_before} → ${t.words_after} words`,
+  expand: (t) => `${t.words_before} → ${t.words_after} words`,
+  strengthen_argument: (t) => `${t.words_before} → ${t.words_after} words`,
+  humanize: (t) => `naturalness ${t.naturalness_before} → ${t.naturalness_after}`,
+  simplify: (t) => `reading ease ${t.reading_ease_before} → ${t.reading_ease_after}`,
+  add_citations: (t) => `${t.citations_added} source(s) newly cited · uncited statements ${t.uncited_before} → ${t.uncited_after}`,
+};
 
 const META_KEYS = new Set(["title", "keywords", "abstract"]);
 const META_TITLES = { title: "Title", keywords: "Keywords", abstract: "Abstract" };
@@ -217,13 +226,15 @@ export default function Studio({ project, setProject, navigate, events, health }
   const keys = project.structure.filter((r) => project.segments[r.key]).map((r) => r.key);
   const unwritten = project.structure.filter((r) => !project.segments[r.key] && r.custom && r.kind === "generated");
   const [arranging, setArranging] = useState(false);
-  const engineReady = health?.ollama && health?.model_available;
+  const engineReady = health?.ready ?? (health?.ollama && health?.model_available);   // the local model, or a cloud model with a key
   const [active, setActive] = useState(() => keys.find((k) => project.segments[k].status !== "approved") || keys[0]);
   const [instruction, setInstruction] = useState("");
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [bubble, setBubble] = useState(null);
   const [selection, setSelection] = useState("");
+  const [strength, setStrength] = useState(() => { try { return Number(localStorage.getItem("raf-tool-strength")) || 2; } catch { return 2; } });
+  const pickStrength = (v) => { setStrength(v); try { localStorage.setItem("raf-tool-strength", String(v)); } catch { /* storage unavailable */ } };
   const paperRef = useRef(null);
   const sources = useSources(project);
 
@@ -288,7 +299,7 @@ export default function Studio({ project, setProject, navigate, events, health }
     return s >= 0 && e > s ? seg.content.slice(s, e + tail.length) : "";
   };
 
-  const applyTool = (tool, sel = selection) => run(() => api.tool(project.id, active, tool, sel), `RAF is applying “${TOOLS.find((t) => t.key === tool).label}”…`);
+  const applyTool = (tool, sel = selection) => run(() => api.tool(project.id, active, tool, sel, strength), `RAF is applying “${TOOLS.find((t) => t.key === tool).label}” paragraph by paragraph…`);
   const submitRevision = (e) => {
     e.preventDefault();
     if (instruction.trim().length < 3) return;
@@ -332,7 +343,7 @@ export default function Studio({ project, setProject, navigate, events, health }
             );
           })}
           {unwritten.map((r) => (
-            <button key={r.key} className="muted" disabled={busy || !engineReady || jobCount >= maxJobs} title={engineReady ? "RAF writes this segment now" : "Start Ollama to write"}
+            <button key={r.key} className="muted" disabled={busy || !engineReady || jobCount >= maxJobs} title={engineReady ? "RAF writes this segment now" : "Start Ollama or add a cloud model key to write"}
               onClick={() => run(() => api.writeSegment(project.id, r.key), `RAF is writing ${r.title}`).then(() => setActive(r.key))}>
               <span>+ Write {r.title}</span>
               <Icon name="spark" size={13} />
@@ -436,7 +447,27 @@ export default function Studio({ project, setProject, navigate, events, health }
                 </button>
               ))}
             </div>
-            <p className="muted" style={{ fontSize: 11.5, margin: "10px 0 0" }}>Select text in the page to apply a tool to just that passage.</p>
+            <div className="row between" style={{ marginTop: 12 }}>
+              <span className="muted" style={{ fontSize: 12 }}>Strength</span>
+              <Segmented value={strength} onChange={pickStrength} options={STRENGTHS} />
+            </div>
+            <p className="muted" style={{ fontSize: 11.5, margin: "10px 0 0" }}>
+              Tools work through the text one paragraph at a time and check each against the original. Select text in the page to apply a tool to just that passage.
+            </p>
+            {q.tool?.tool && (
+              <div className="humanize-report">
+                <b>Last tool: {q.tool.label}</b> ({STRENGTHS[q.tool.strength - 1]?.label.toLowerCase()}) · {timeAgo(q.tool.at)}<br />
+                {q.tool.rewritten + q.tool.rules_only} of {q.tool.attempted} paragraphs changed{TOOL_FACT[q.tool.tool] ? ` · ${TOOL_FACT[q.tool.tool](q.tool)}` : ""}<br />
+                Citations kept {q.tool.citations_preserved} · numbers kept {q.tool.numbers_preserved}
+                {q.tool.rules_only > 0 && <div className="muted" style={{ marginTop: 4 }}>{q.tool.rules_only} paragraph(s) got the safe rule edits only: the model's rewrite did not pass the checks.</div>}
+                {q.tool.partial > 0 && <div className="muted" style={{ marginTop: 4 }}>{q.tool.partial} paragraph(s) reached the goal only in part. Run the tool again, or use Strong.</div>}
+                {q.tool.kept?.length > 0 && (
+                  <div className="muted" style={{ marginTop: 4 }}>
+                    {q.tool.kept.length} paragraph(s) left as they were{q.tool.kept[0]?.reasons?.[0] ? ` (paragraph ${q.tool.kept[0].paragraph}: ${q.tool.kept[0].reasons[0]})` : ""}.
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           <div className="card">
@@ -447,6 +478,13 @@ export default function Studio({ project, setProject, navigate, events, health }
             <div className="metric"><span>Sentences re-expressed</span><span>{q.rewritten_sentences}</span></div>
             <div className="metric"><span>Still close to a source</span><span style={{ color: q.flagged_sentences ? "var(--warn)" : "var(--ok)" }}>{q.flagged_sentences}</span></div>
             <div className="metric"><span>Citations</span><span>{q.citations}</span></div>
+            {project.evidence?.online > 0 && (
+              <div className="metric" title="How far RAF's reading went. Sources known only from their abstract support less detail.">
+                <span>Evidence base</span>
+                <span>{[project.evidence.references && `${project.evidence.references} uploaded`, `${project.evidence.online_full} online in full`,
+                  `${project.evidence.online_abstract} by abstract`].filter(Boolean).join(" · ")}</span>
+              </div>
+            )}
             {q.readability != null && <div className="metric"><span>Flesch reading ease</span><span>{q.readability}</span></div>}
             {q.unverified_numbers?.length > 0 && (
               <div style={{ marginTop: 10, fontSize: 12, color: "var(--warn)" }}>
@@ -501,19 +539,6 @@ export default function Studio({ project, setProject, navigate, events, health }
               <div className="metric"><span>Stock connectors</span><span>{Math.round(q.style.stock_connector_share * 100)}%</span></div>
               <div className="metric"><span>Formulaic phrases /100 w</span><span>{q.style.generic_phrases_per_100_words}</span></div>
               <div className="metric"><span>Lexical diversity</span><span>{q.style.lexical_diversity}</span></div>
-              {q.humanize?.attempted > 0 && (
-                <div className="humanize-report">
-                  <b>Last Humanize</b> · {timeAgo(q.humanize.at)}<br />
-                  Rewrote {q.humanize.rewritten}/{q.humanize.attempted} paragraphs · score {q.humanize.score_before} → {q.humanize.score_after}<br />
-                  Citations kept {q.humanize.citations_preserved} · numbers kept {q.humanize.numbers_preserved}
-                  {q.humanize.kept?.length > 0 && (
-                    <div className="muted" style={{ marginTop: 4 }}>
-                      {q.humanize.kept.length} paragraph(s) left unchanged because a rewrite would have lost content
-                      {q.humanize.kept[0]?.reasons?.[0] ? ` (e.g. ${q.humanize.kept[0].reasons[0]})` : ""}.
-                    </div>
-                  )}
-                </div>
-              )}
             </div>
           )}
 

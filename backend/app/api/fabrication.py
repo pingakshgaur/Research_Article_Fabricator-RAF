@@ -25,7 +25,7 @@ def generate(pid: str, body: GenerateRequest):
         raise HTTPException(422, f"Upload at least {need} reference article{'s' if need != 1 else ''} (currently {len(p.references)}), or choose another source mode on the References page.")
     if p.source_mode == "research" and not body.web_research:
         raise HTTPException(422, "A Research-only article needs Online research switched on: it has no other sources.")
-    engine_ready()
+    engine_ready(body.cloud)
     store.mutate(pid, lambda proj: setattr(proj, "stage", "processing"))
     jobs.start(pid, "Article generation", lambda: writer.generate_article(pid, body))
     return view(get(pid))

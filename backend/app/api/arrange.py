@@ -175,7 +175,7 @@ def propose(pid: str, body: Proposal):
     if len(title) < 2 or len(purpose) < 15:
         raise HTTPException(422, "Give the segment a title and say in a sentence or two what it should do.")
     moves = []
-    if llm.health()["model_available"]:
+    if llm.ready():
         data = llm.generate_json(
             "You design the internal structure of sections of scholarly articles. Reply with JSON only.",
             f"ARTICLE: {p.title}\nTOPIC: {p.topic}\nARTICLE TYPE: {p.article_type}\n\nNEW SECTION: {title}\nWHAT IT SHOULD DO: {purpose}\n\n"

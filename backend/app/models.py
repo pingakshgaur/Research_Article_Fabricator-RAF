@@ -88,6 +88,7 @@ class QualityReport(BaseModel):
     flags: list[dict] = []        # sentences still needing attention: {sentence, verdict, reason}
     style: dict = {}              # naturalness metrics and score
     humanize: dict = {}           # last Humanize run report
+    tool: dict = {}               # report of the last text tool applied (see textops.run)
 
 
 class Segment(BaseModel):
@@ -193,7 +194,8 @@ class GenerateRequest(BaseModel):
     web_research: bool = True
     data_analysis: bool = True
     depth: Literal["quick", "thorough"] = "thorough"
-    agents: int = Field(default=1, ge=1, le=3)    # 1 solo · 2 duo · 3 trio
+    agents: int = Field(default=1, ge=1, le=3)    # agents on this PC: 1 solo · 2 duo · 3 trio
+    cloud: bool = True                            # let the cloud models the user added keys for work on this run too
     lengths: dict[str, int] = {}
     resume: bool = False                          # continue from checkpoints instead of rewriting drafts
     tone: dict | None = None
@@ -224,6 +226,7 @@ class ReviseRequest(BaseModel):
 class ToolRequest(BaseModel):
     tool: Literal["expand", "condense", "formalize", "simplify", "add_citations", "polish", "humanize", "strengthen_argument"]
     selection: str = ""
+    strength: int = Field(default=2, ge=1, le=3)      # 1 light · 2 balanced · 3 strong
 
 
 class ManualEdit(BaseModel):

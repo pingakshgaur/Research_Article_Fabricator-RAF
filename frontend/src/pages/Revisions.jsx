@@ -159,7 +159,7 @@ function Round({ project, round, engineReady, reload, showChanges }) {
           The article is saved as a revision before and after, so the round can be undone. Revised segments go back to “draft” for your approval.
         </span>
         <div className="row">
-          {!engineReady && <span className="badge bad">Start Ollama to apply</span>}
+          {!engineReady && <span className="badge bad">No model available</span>}
           <Button variant="primary" icon="spark" disabled={!accepted || !engineReady || !!project.busy || !!working} onClick={apply}>
             {working === "apply" ? "Starting…" : `Apply ${accepted} point${accepted === 1 ? "" : "s"}`}
           </Button>
@@ -222,7 +222,7 @@ export default function Revisions({ project, setProject, health }) {
   useEffect(reload, [reload, project.updated, project.busy]);
 
   const written = Object.values(project.segments).some((s) => s.content);
-  const engineReady = health?.ollama && health?.model_available;
+  const engineReady = health?.ready ?? (health?.ollama && health?.model_available);   // the local model, or a cloud model with a key
   const run = async (key, fn) => {
     setWorking(key);
     try { await fn(); } catch (err) { toast(err.message, "error"); } finally { setWorking(""); }

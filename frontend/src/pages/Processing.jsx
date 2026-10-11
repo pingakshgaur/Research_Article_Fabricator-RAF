@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api.js";
-import { Button, Icon, useToast } from "../ui.jsx";
+import { Button, Icon, Segmented, useToast } from "../ui.jsx";
+import Window from "../Window.jsx";
 
 const STAGES = [
   { key: "estimate", title: "Estimating time", sub: "Speed probe · work inventory" },
@@ -76,6 +77,45 @@ export function projectRun(project, now) {
   return { estimate: est.total, elapsed, left, projected: elapsed + left, pace, est };
 }
 
+/** Mixed and Research-only projects stop here once: the author approves the sources before anything is written. */
+function ReadingList({ project, setProject, onStart, starting }) {
+  const toast = useToast();
+  const sources = project.web_sources;
+  const full = sources.filter((s) => s.fulltext).length;
+  const change = async (fn) => { try { setProject(await fn()); } catch (err) { toast(err.message, "error"); } };
+  return (
+    <div className="card reading-list">
+      <div className="row between wrap" style={{ alignItems: "flex-start" }}>
+        <div style={{ maxWidth: 640 }}>
+          <div className="eyebrow" style={{ marginBottom: 6 }}>Your approval is needed</div>
+          <div className="h2" style={{ fontSize: 22 }}>The reading list RAF found</div>
+          <p className="muted" style={{ margin: "4px 0 0" }}>
+            {sources.length} sources from scholarly databases; {full} were open access and have been read in full, the other {sources.length - full} by title and abstract.
+            Remove what does not belong and pin what must be used. To add a paper of your own, upload it on the References page. Nothing is written until you start.
+          </p>
+        </div>
+        <Button variant="primary" size="lg" icon="spark" disabled={starting || !sources.length} onClick={onStart}>{starting ? "Starting…" : `Start writing from these ${sources.length}`}</Button>
+      </div>
+      <div className="source-list">
+        {sources.map((s, i) => (
+          <div key={s.id} className={`source-row ${s.pinned ? "pinned" : ""}`}>
+            <span className="mono muted">W{i + 1}</span>
+            <div style={{ minWidth: 0 }}>
+              <div className="source-title">{s.url || s.doi ? <a href={s.doi ? `https://doi.org/${s.doi}` : s.url} target="_blank" rel="noreferrer">{s.title}</a> : s.title}</div>
+              <div className="muted" style={{ fontSize: 12 }}>{[s.authors.slice(0, 3).join(", ") + (s.authors.length > 3 ? " et al." : ""), s.year, s.venue].filter(Boolean).join(" · ")}</div>
+            </div>
+            <span className={`badge ${s.fulltext ? "ok" : ""}`} title={s.fulltext ? `${s.chars.toLocaleString()} characters read` : "No open-access copy was found"}>{s.fulltext ? "full text" : "abstract only"}</span>
+            <span className="badge">{s.source}</span>
+            <button className={`btn ghost sm ${s.pinned ? "on" : ""}`} aria-pressed={s.pinned} title="A pinned source is always put in front of the writer"
+              onClick={() => change(() => api.pinSource(project.id, s.id, !s.pinned))}>{s.pinned ? "Pinned" : "Pin"}</button>
+            <button className="btn ghost icon sm danger" aria-label={`Remove ${s.title}`} title="Remove from the reading list" onClick={() => change(() => api.removeSource(project.id, s.id))}><Icon name="x" /></button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function LengthChip({ project, seg, setProject }) {
   const [editing, setEditing] = useState(false);
   const current = project.segment_lengths?.[seg.key] ?? seg.quality.target_words;
@@ -98,7 +138,8 @@ function LengthChip({ project, seg, setProject }) {
   );
 }
 
-export default function Processing({ project, setProject, events, navigate }) {
+export default function Processing({ project, setProject, events, navigate, sheets }) {
+  const [view, setView] = useState("window");      // "window": watch the text being written · "console": the log
   const consoleRef = useRef(null);
   const toast = useToast();
   const run = project.run || {};
@@ -123,7 +164,8 @@ export default function Processing({ project, setProject, events, navigate }) {
   const doneCount = segs.filter((s) => ["draft", "approved"].includes(s.status)).length;
   const lastError = [...runEvents].reverse().find((e) => e.kind === "error");
   const finished = !working && (run.status === "completed" || (segs.length > 0 && doneCount === segs.length));
-  const stopped = !working && !finished;
+  const reviewing = !working && run.status === "review";      // paused for the reading list
+  const stopped = !working && !finished && !reviewing;
   const [resuming, setResuming] = useState(false);
 
   const total = runElapsed(run, now);
@@ -141,8 +183,9 @@ export default function Processing({ project, setProject, events, navigate }) {
       const o = project.options || {};
       setProject(await api.generate(project.id, {
         segments: project.selected, web_research: o.web_research ?? true, data_analysis: o.data_analysis ?? true,
-        depth: o.depth ?? "thorough", agents: o.agents ?? 1, resume: true,
+        depth: o.depth ?? "thorough", agents: o.agents ?? 1, cloud: o.cloud ?? true, resume: true,
         hallucination_filter: o.hallucination_filter ?? true, style_pass: o.style_pass ?? true,
+        ...(reviewing ? { sources_confirmed: true } : {}),      // "Start writing" on the reading list
       }));
     } catch (err) {
       toast(err.message, "error");
@@ -157,10 +200,11 @@ export default function Processing({ project, setProject, events, navigate }) {
         <div style={{ flex: 1, minWidth: 320 }}>
           <div className="eyebrow">Step 04 — Fabrication</div>
           <h1 className="h2" style={{ fontSize: 38, marginTop: 10 }}>
-            {working ? "RAF is at work." : finished ? "The draft is ready." : "Fabrication stopped."}
+            {working ? "RAF is at work." : finished ? "The draft is ready." : reviewing ? "The reading list is ready." : "Fabrication stopped."}
           </h1>
           <p className="muted" style={{ margin: 0, maxWidth: 760, color: stopped && lastError ? "var(--bad)" : undefined }}>
             {working ? currentMessage || "Preparing…" : finished ? "Open the studio to review every segment."
+              : reviewing ? "Online research is done. Look through the sources below, then start the writing."
               : lastError ? `${lastError.message} — Resume continues from the last checkpoint.` : "The run is paused. Resume continues from the last checkpoint."}
           </p>
           <div className="row wrap" style={{ marginTop: 16 }}>
@@ -231,7 +275,13 @@ export default function Processing({ project, setProject, events, navigate }) {
         </div>
 
         <div>
-          <div className="console" ref={consoleRef} aria-live="polite">
+          {reviewing && <ReadingList project={project} setProject={setProject} onStart={resume} starting={resuming} />}
+          <div className="row between" style={{ marginBottom: 10 }}>
+            <Segmented value={view} onChange={setView} options={[{ value: "window", label: "Window" }, { value: "console", label: "Console" }]} />
+            <span className="muted" style={{ fontSize: 12 }}>{view === "window" ? "The text of each segment, as it is written" : "Every step RAF takes"}</span>
+          </div>
+          {view === "window" && <Window project={project} sheets={sheets || {}} events={runEvents} />}
+          {view === "console" && <div className="console" ref={consoleRef} aria-live="polite">
             {runEvents.filter((e) => ["log", "stage", "error", "done", "job", "checkpoint"].includes(e.kind)).map((e, i) => (
               <div key={i} className={`line ${e.kind === "stage" ? "stage" : ""} ${e.kind === "error" ? "error" : ""} ${e.kind === "checkpoint" ? "checkpoint" : ""}`}>
                 <span className="ts">{fmtTime(e.t)}</span>
@@ -239,8 +289,8 @@ export default function Processing({ project, setProject, events, navigate }) {
               </div>
             ))}
             {working && <span className="caret" />}
-          </div>
-          <div className="seg-progress">
+          </div>}
+          {view === "console" && <div className="seg-progress">
             {segs.map((s) => {
               const secs = segSeconds(s.key);
               return (
@@ -259,7 +309,7 @@ export default function Processing({ project, setProject, events, navigate }) {
                 </div>
               );
             })}
-          </div>
+          </div>}
         </div>
       </div>
     </div>

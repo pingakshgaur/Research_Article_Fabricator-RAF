@@ -5,10 +5,12 @@ article. It reads your references, researches the topic across scholarly databas
 each segment you select with its own writing blueprint, lets you revise every segment, and publishes the approved
 article as **DOCX, PDF or Markdown**.
 
-All text generation runs on your own machine through **Ollama + `gemma4:12b`**, a 12-billion-parameter small language
-model (SLM). RAF uses no API keys and has no cloud LLM.
+By default all text generation runs on your own machine through **Ollama + `gemma4:12b`**, a 12-billion-parameter small
+language model (SLM), and RAF needs no API key. If you have a key for a stronger model (Claude, GPT, Gemini, NVIDIA and
+others), you can add it and let that model write beside the local one or instead of it: see
+[Cloud models](#cloud-models-your-own-api-keys).
 
-**Current version: 1.7.0** (API and web interface). This README covers how to install, run and use RAF and how the
+**Current version: 1.8.2** (API and web interface). This README covers how to install, run and use RAF and how the
 code is laid out. The full product specification is in [PRD.md](PRD.md).
 
 **Jump to:** [Quick start](#quick-start-windows) · [What you need](#what-you-need) ·
@@ -16,7 +18,7 @@ code is laid out. The full product specification is in [PRD.md](PRD.md).
 [3. Ollama and models](#3-install-ollama-and-download-the-models) · [4. Run RAF](#4-run-raf) ·
 [5. Check it works](#5-check-that-everything-works) · [Configuration](#configuration-environment-variables) ·
 [Troubleshooting](#troubleshooting) · [API](#api-overview) · [Project layout](#project-layout) ·
-[LaTeX and reference files](#latex-and-reference-files) · [Format an existing article](#format-an-existing-article) · [Article structure](#article-structure) · [Library, History and Revisions](#library-history-and-revisions) · [Settings and themes](#settings-and-themes) · [Where data is stored](#where-data-is-stored) · [Working on the code](#working-on-the-code)
+[Writing without reference files](#writing-without-reference-files) · [The Window](#the-window) · [LaTeX and reference files](#latex-and-reference-files) · [Format an existing article](#format-an-existing-article) · [Article structure](#article-structure) · [Library, History and Revisions](#library-history-and-revisions) · [Settings and themes](#settings-and-themes) · [Cloud models](#cloud-models-your-own-api-keys) · [Text tools and Humanize](#text-tools-and-humanize) · [Where data is stored](#where-data-is-stored) · [Working on the code](#working-on-the-code)
 
 ---
 
@@ -25,11 +27,57 @@ code is laid out. The full product specification is in [PRD.md](PRD.md).
 | Step | What happens |
 |---|---|
 | **01 Topic & title** | Title, research focus, discipline, article type (empirical, systematic review, conceptual, case study, mixed methods), citation style (APA / Harvard / Chicago / IEEE), target length (2,500–12,000 words), authors and affiliation. |
-| **02 References** | Upload 10–20 PDF / DOCX / Markdown / TXT articles, up to 60 MB each. You can also upload your own dataset (CSV / TSV / XLSX / XLS). |
+| **02 References** | Choose the source mode: **My references** (upload 10–20 PDF / DOCX / Markdown / TXT articles, up to 60 MB each), **Mixed** (one file or more, topped up by research) or **Research only** (no files; see [Writing without reference files](#writing-without-reference-files)). You can also upload your own dataset (CSV / TSV / XLSX / XLS). |
 | **03 Segments** | Choose any of: Title, Abstract, Keywords, Introduction, Review of Literature, Methodology, Results/Analysis, Discussion, Conclusion & Implications, Limitations & Future Research, References, Appendices — or rename them, reorder them and add your own (see [Article structure](#article-structure)). Presets: Full article, Core IMRaD, Literature-focused. On the same page you set the length of each segment, the tone, the writing depth, the number of agents, and switch online research, data analysis, the hallucination filter and the style pass on or off. |
-| **04 Fabrication** | RAF first estimates how long the run will take, then a live pipeline view streams every step: parsing, research, indexing, analysis, writing, and integrity checks. |
+| **04 Fabrication** | RAF first estimates how long the run will take, then works through parsing, research, indexing, analysis, writing and integrity checks. [The Window](#the-window) shows the text of every segment as it is written; the Console shows every step. In Mixed and Research-only projects the run pauses once for you to approve the reading list. |
 | **05 Studio** | Read each segment on a paper-style page with hoverable citations, tables and figures. Request changes in plain language, apply text tools (Expand, Condense, Formalize, Simplify, Add citations, Polish, Humanize, Strengthen) to a whole segment or a selected passage, edit by hand, regenerate, restore any of the last 20 versions, and approve. Up to three segments can be worked on at the same time. |
 | **06 Publish** | Pick a template and colour style, preview the layout, and once every segment is approved, download a typeset PDF, DOCX, LaTeX or Markdown file. A draft export is available before everything is approved, and the reference list can be saved on its own as BibTeX or RIS. You can also re-import an edited DOCX, PDF or Markdown file, and RAF splits it back into segments by matching its headings. |
+
+## Writing without reference files
+
+On the References page you choose where the evidence comes from.
+
+| Source mode | Files you upload | What RAF does |
+|---|---|---|
+| **My references** | 10–20 | Writes from your files. Online research adds sources beside them. This is how RAF always worked. |
+| **Mixed** | 1 or more | Your files are the core. RAF tops them up with a deeper online search. |
+| **Research only** | none | RAF builds the whole reading list itself from scholarly databases. |
+
+In **Mixed** and **Research only**, online research works harder than usual:
+
+* **Two rounds of searching.** After the first round the model looks at what was found and asks follow-up questions
+  for what is still thin. Up to 60 sources are kept (36 in My references).
+* **Open-access papers are read in full.** Where a database, arXiv, Europe PMC or Unpaywall offers a legal
+  open-access copy, RAF downloads the paper and reads all of it, exactly like a file you uploaded (up to 12 papers).
+  The other sources are known from their title and abstract only.
+* **You approve the reading list.** When research is done, the run **pauses**. The Fabrication page lists every source
+  with its venue, year and whether RAF has the full text. Remove what does not belong, **pin** what must be used (a
+  pinned source is always put in front of the writer), and add your own files on the References page if you like.
+  Nothing is written until you press **Start writing**.
+* **Scholarly sources only.** A Research-only article does not cite Wikipedia or general web pages.
+* **The article says how far the reading went.** The Methodology describes the search as it happened ("a structured
+  search of …; 41 sources retained; 9 read in full text; the remaining 32 assessed from title and abstract only"), and
+  the Studio's integrity report shows the same split as *Evidence base*.
+
+Be realistic about the result: an article built mostly on abstracts has less detail to draw on than one built on
+twenty papers you chose. Upload the key papers whenever you have them. Unpaywall only answers requests that carry a
+real e-mail address, so set `RAF_CONTACT_EMAIL` to yours to get the most full texts.
+
+## The Window
+
+The Fabrication page has two views, switched at the top right of the panel: **Window** and **Console**.
+
+* In the **Window**, every segment is a sheet of paper. A sheet that is being written fills with text as the model
+  produces it, word by word, and a label says what is happening to it (taking notes, drafting part 2 of 4, peer review,
+  checking claims, originality check).
+* **You see the corrections.** When the hallucination filter corrects or removes a sentence, or the originality guard
+  re-expresses one, the sentence is struck through on the sheet with its replacement beside it, and a note under the
+  sheet says why.
+* **Look, don't touch.** The view never changes the run. Click a sheet to enlarge it, click again to see them all.
+  Editing happens in the Studio.
+* With Duo or Trio agents, two or three sheets are written at once. Opening the page in the middle of a run shows each
+  sheet as it stands. A revision started in the Studio shows up here too.
+* The **Console** is the step-by-step log that was there before.
 
 ## LaTeX and reference files
 
@@ -185,6 +233,136 @@ The gear button in the top bar opens **Settings**, the one place where RAF itsel
   `app_settings.json` removes the lock. That is also how a forgotten passcode is recovered.
 * **About.** Version, model, data folder, number of projects, and a button that resets RAF's settings.
 
+## Cloud models (your own API keys)
+
+The local model is enough to write an article, but it is small and, on most PCs, slow. If you have an API key for a
+stronger model, RAF can use it. Nothing changes until you add a key.
+
+**Add a key:** Settings → **Language model** → **Cloud models**. Paste the key; RAF recognises the provider from how the
+key starts, asks the provider for its model list to check the key (this is free), and saves it.
+
+| Provider | Starts with | Model a new key begins with |
+|---|---|---|
+| **Claude** (Anthropic) | `sk-ant-` | `claude-opus-5-5` |
+| **GPT** (OpenAI) | `sk-` | `gpt-5` |
+| **Gemini** (Google) | `AIza` | `gemini-2.5-pro` |
+| **NVIDIA NIM** | `nvapi-` | `meta/llama-3.3-70b-instruct` |
+| **Groq**, **Mistral**, **DeepSeek**, **OpenRouter** | `gsk_`, –, –, `sk-or-` | one sensible default each |
+| **Other** | anything | any server that speaks the OpenAI chat API: give its address and model name |
+
+The model names above are only starting points and may be out of date. Press **List** on a key to load the models your
+key can really use, and pick one.
+
+**What a key gives you**
+
+* **More agents.** Every key adds 1 to 4 agents (you choose) that work beside the local Solo / Duo / Trio agents. RAF
+  runs at most 8 at once. Several keys, also from different providers, work at the same time.
+* **Who writes** — one switch for all keys: *This PC only* (keys stay saved, nothing is sent), *This PC + cloud* (cloud
+  models are asked first, the local model takes the rest), or *Cloud only* (the local model only steps in when no cloud
+  model is left). In Cloud-only mode RAF works without Ollama, apart from the neural part of retrieval.
+* **A role per key:** *Everything*, *Writing only* or *Checks only*. A fast, cheap key can do the fact checks while a
+  strong one writes.
+* **Priority:** the first key in the list is asked first. **Make first** moves a key to the top.
+* **Per run:** the Segments page shows, under the agents box, every model that will write, each with its mark and its
+  number of agents. **Use my cloud models** leaves them out of one run.
+
+**The rules each model is driven by** (shown per key under *How RAF drives …*)
+
+* **One output contract for every cloud model:** only the requested text, no preamble, no Markdown unless asked, and
+  citation markers such as `[R3]` left exactly as given.
+* **Claude** is called through Anthropic's own SDK. Current Claude models do not accept a temperature, so RAF sets the
+  *effort* instead (medium for writing, low for checks), leaves thinking on, and keeps 6,000 tokens free for it. If
+  Claude declines a request, Anthropic's own fallback model answers it (RAF switches this on for the models that
+  support it); if that declines too, your next model gets the request.
+* **All other providers** are called through the OpenAI-compatible chat API they offer. When a model rejects a
+  parameter (reasoning models reject `max_tokens` and `temperature`, some servers reject JSON mode), RAF changes the
+  request, repeats it and remembers the rule for that model until RAF is restarted.
+* **When something fails:** a key the provider rejects is switched off and marked *rejected*; a key that hits its rate
+  limit rests for the time the provider asks while the others carry on; a model that keeps failing is left out of the
+  run; a declined request goes to another model. If no cloud model is left, the local model continues.
+* **One voice per segment:** an agent keeps using the model it used last while that model is free.
+
+**What you should know before using it**
+
+* **Your text leaves the computer.** A cloud model receives the prompts RAF writes for it. They contain passages of
+  your reference files and of the draft. Read the provider's terms if the material is unpublished or confidential.
+  The Segments page and the run log name the providers every time.
+* **It costs money.** Every request is billed to your key by the provider. A thorough article is several hundred
+  requests. RAF shows how many requests each key has answered since it was started, not what they cost.
+* **Keys are stored encrypted** in `<data_dir>/llm_keys.json`. On Windows RAF uses Windows data protection, so the
+  file is useless on another computer or under another Windows account. On macOS and Linux it uses an AES key file
+  next to the data, which protects a copied file but not a copied data folder. In both cases a program running under
+  your own account could ask for the key the same way RAF does. The key is never sent back to the browser: you see
+  only its last four characters. To change a key, remove it and add the new one.
+* **The admin lock covers the keys.** With a passcode set, keys cannot be added, changed, tested or removed until
+  Settings is unlocked.
+* **Mixed voices.** Segments written by different models can read differently. The style pass evens much of it out;
+  for the most even result use Cloud-only mode with one provider.
+* **The time estimate is rough with cloud models.** RAF measures the speed of the local model only and assumes a
+  typical speed for cloud models.
+* **The AI-use statement names them.** History records which models wrote in each run, and the statement says which
+  ran on your computer and which through a provider's online service.
+
+## Text tools and Humanize
+
+The Studio has eight text tools: **Expand, Condense, Formalize, Simplify, Add citations, Polish, Humanize** and
+**Strengthen**. Apply one to a whole segment, or select a passage in the page and apply it to that passage only.
+**Strength** (Light, Balanced, Strong) sets how far each tool goes.
+
+| Tool | What it does | Light / Balanced / Strong |
+|---|---|---|
+| **Expand** | Develops each paragraph: mechanism, consequence, sources set against each other. New facts come only from your sources and are cited. | about +20 / +40 / +70 % |
+| **Condense** | Cuts repetition and padding, merges sentences that make the same point. Findings and citations stay. | to about 80 / 65 / 50 % |
+| **Formalize** | Removes contractions and loose wording, uses the exact term. Plain correct words are left alone. | how much is reworded |
+| **Simplify** | Splits long sentences, prefers the plain word, turns noun chains into verbs. Technical terms stay. | how much easier it must read |
+| **Add citations** | Finds statements without a citation and cites the source that supports them. | how much supporting detail may be added |
+| **Polish** | Grammar, punctuation, transitions. Your wording stays wherever it is already correct. | how much may be reworded |
+| **Humanize** | Breaks uniform rhythm, removes formulaic wording and stock connectors, restructures sentences. | how different the result must be |
+| **Strengthen** | Makes claims specific and the reasoning explicit; answers one obvious objection from your sources. | about +5 / +15 / +30 % |
+
+**How every tool works** (`backend/app/textops.py`). A tool never sends a whole section to the model in one request.
+That is what made the earlier tools fail on long text: the answer was cut off, or the model summarised. Now each
+paragraph goes through the same layers, several paragraphs at a time:
+
+1. **Split.** Paragraphs are worked on one by one. Tables, figures and headings are set aside. A paragraph longer
+   than about 260 words is handled a few sentences at a time.
+2. **Diagnose**, without the model: rhythm, repeated openers, formulaic wording, register, reading ease, statements
+   without a citation. The result is a list of exact things to change, for example "split the sentence that begins …",
+   "three sentences open with *The*", "replace: crucial, landscape, pivotal".
+3. **Rules.** Edits that cannot change the meaning are applied directly: filler phrases, stock connectors at the start
+   of a sentence, contractions, repeated sentences. This guarantees a result even when the model returns nothing usable.
+4. **Rewrite.** The model rewrites the paragraph from a measured brief (target length in words, the sentences to split
+   or join, the phrases to replace, the evidence it may cite). The sentences before and after are shown for flow only.
+5. **Repair.** A citation the model dropped is put back on the sentence it belonged to. A citation of a source that
+   was not offered is removed.
+6. **Gate.** A rewrite is used only if it keeps every citation and number, the names and the content, and stays inside
+   the length window of the tool. It must not take text from the neighbouring paragraph or bring in new stock wording.
+   The model then reads original and rewrite side by side once more as a checker and names contradictions and
+   invented facts; only findings that quote the rewrite count.
+7. **Select.** A rejected rewrite is tried again with the reason. Of the rewrites that pass, the one that reaches the
+   goal best is kept. If none passes, the rules-only version is used; if that changed nothing, the paragraph stays as
+   it was.
+
+The Studio shows what the last tool did: how many paragraphs changed, the figure that matters for that tool (words
+before and after, naturalness, reading ease, sources newly cited), citations and numbers kept, and why a paragraph
+was left alone. Every run is a version of the segment, so it can be undone.
+
+**What to expect**
+
+* **Time.** One paragraph takes two model calls or more. On the local model, on the test PC, that was about 40 seconds a paragraph
+  for most tools, about a minute for Expand and over two minutes for Strengthen. A section of twenty paragraphs
+  therefore takes a quarter of an hour or more with one agent. Paragraphs run in
+  parallel, so Duo, Trio and [cloud models](#cloud-models-your-own-api-keys) shorten this.
+* **Quality follows the model.** The checks stop a rewrite that breaks the text. They cannot make a small model write
+  like a strong one. With a cloud key set to *Writing*, that model does the rewriting inside the same checks.
+* **Add citations cites only what your sources support.** A statement no source supports stays unmarked, and RAF does
+  not ask the model a second time, because that only pushes it to force a citation. After Expand, Add citations or
+  Strengthen brought in new sources, the segment goes through the hallucination filter like a new draft.
+* **Humanize is not a detector bypass.** It makes text read as a careful person wrote it. RAF makes no claim about
+  what an AI-text detector will say, and it does not replace any disclosure your journal asks for.
+* **There is no "ChatGPT algorithm" or "Claude algorithm" for humanizing** that could be built in: neither company
+  publishes one. What those models offer is their writing ability, which RAF uses when you add their API key.
+
 ## Reliability & speed features
 
 * **Time estimate.** In the first seconds of a run RAF measures the model's real speed with a short test generation (at most 14 seconds), counts the work that is left, and shows an estimated total next to the timer. The estimate covers each stage and each segment, and the projection ("≈ 40m left · ends ~16:20") tightens as the run goes on. Every completed run is recorded in `<data_dir>/timing_history.json`, and the next estimates are corrected from the last runs at the same depth, so accuracy improves with use.
@@ -210,7 +388,7 @@ The gear button in the top bar opens **Settings**, the one place where RAF itsel
   3. Every claim is checked against the passages of the source it cites; unclear cases go to a judge model.
   4. Unsupported claims are corrected from the evidence or removed.
   Anything still unverified is highlighted in the Studio. A whole-article review then checks that research questions are answered and numbers match across sections.
-* **Style engine** (`backend/app/style.py`). Measures sentence variation, repeated openers, stock connectors and formulaic phrases, and gives a naturalness score. It also profiles how your reference articles are written, so drafts follow your field's conventions. **Humanize** rewrites one paragraph at a time and keeps a rewrite only if every citation, number, name, key term and claim is preserved and the style metrics improve. Otherwise the paragraph stays unchanged.
+* **Style engine** (`backend/app/style.py`). Measures sentence variation, repeated openers, stock connectors and formulaic phrases, and gives a naturalness score. It also profiles how your reference articles are written, so drafts follow your field's conventions. The rewriting itself, for Humanize and every other text tool, is done by the engine in `backend/app/textops.py`: see [Text tools and Humanize](#text-tools-and-humanize).
 * **Tone meter**. Five tones (Formal academic, Critical-analytical, Argumentative, Explanatory, Reflective/narrative), each with an intensity slider.
 * **Length plan**. Short / Medium / Long, pages or words for each segment. Suggestions follow the usual proportions of the selected article type.
 * **Publishing templates**. Modern Report, Classic Journal, APA 7 Manuscript, Two-Column Conference and Minimal Monograph, in 7 colour styles (the APA template is monochrome), for both PDF and DOCX. **Preview layout** opens a panel inside the app that typesets excerpts of your own article in each template, and **Draft preview** exports the real file before every segment is approved.
@@ -305,7 +483,7 @@ Then open **http://localhost:5173**. On macOS or Linux, follow [Option B](#optio
 | **Disk space** | About **10 GB free**: the `gemma4:12b` download is 7.6 GB, and the Python packages take roughly 1 GB. |
 | **GPU** | Optional. An NVIDIA GPU speeds things up a lot. CPU-only works, just more slowly (see [Small-GPU note](#small-gpu-note)). |
 | **Internet** | Needed for the one-time installs and model downloads, and for the online research step. Writing itself runs offline. |
-| **Accounts / API keys** | None. RAF has no cloud LLM and needs no `.env` file. |
+| **Accounts / API keys** | None needed. Optional: an API key of a cloud model, added in Settings (see [Cloud models](#cloud-models-your-own-api-keys)). No `.env` file. |
 
 | Software | Version | Why it is needed |
 |---|---|---|
@@ -520,6 +698,9 @@ OLLAMA_NUM_PARALLEL=3 ollama serve
 
 More agents use more memory. If your machine has little RAM, stay on Solo.
 
+Agents that do not use your PC at all come from [cloud models](#cloud-models-your-own-api-keys): each API key you add
+brings 1 to 4 more.
+
 ## Use a different model
 
 RAF reads the model name from `RAF_MODEL` (default `gemma4:12b`), and you can also switch it under **Settings → Language model**
@@ -549,7 +730,11 @@ noticeably weaker text. Check its output carefully.
   **Restore a backup** brings it back on this or another computer.
 * **Your data:** projects, uploads, indexes, figures and exports live in `backend/data` (or the folder in
   `RAF_DATA_DIR`). Copy that folder to back it up or to move your projects to another computer.
-* **Privacy:** the writing model runs entirely on your machine. The online research step sends search queries to public
+* **What goes online in Mixed and Research-only projects:** search queries, as always, plus downloads of open-access
+  papers and DOI look-ups at Unpaywall. Research itself never sends your own files or your text anywhere.
+* **Cloud models:** only when you added an API key and the mode is not *This PC only*, the prompts for those models,
+  with passages of your references and draft in them, go to the provider of the key.
+* **Privacy:** without a cloud key the writing model runs entirely on your machine. The online research step sends search queries to public
   scholarly databases; turn it off with the **Online research** option on the Segments page before you start a run.
   The data analysis step may also download World Bank indicators when you have not uploaded a dataset; the **Data
   analysis** option controls that.
@@ -594,7 +779,7 @@ defaults** on the same tab deletes the file and returns control to the environme
 | `RAF_MAX_NGRAM_OVERLAP` | `0.04` | Originality guard: maximum 7-word shingle overlap with a source |
 | `RAF_SENTENCE_SIM_LIMIT` | `82` | Originality guard: fuzzy sentence-similarity limit |
 | `RAF_DATA_DIR` | `backend/data` | Projects, uploads, indexes, figures, exports |
-| `RAF_CONTACT_EMAIL` | `raf@example.org` | Sent to OpenAlex, Crossref and NCBI so requests use their polite pool. Set it to your own address. |
+| `RAF_CONTACT_EMAIL` | `raf@example.org` | Sent to OpenAlex, Crossref, NCBI and Unpaywall so requests use their polite pool. Set it to your own address; Unpaywall, which finds open-access copies of papers, does not answer placeholder addresses. |
 | `RAF_CORS` | `http://localhost:5173`, `http://127.0.0.1:5173`, `http://localhost:8080` | Browser origins allowed to call the API (comma-separated) |
 | `RAF_API` | `http://localhost:8000` | Read by the web UI dev server: where to forward `/api` requests |
 | `OLLAMA_NUM_PARALLEL` | Ollama default | Read by Ollama itself, not RAF. Set to at least the number of agents. |
@@ -643,14 +828,15 @@ All routes are under `/api`. `{id}` is a project id and `{key}` a segment key su
 | **History** | `GET /projects/{id}/history` · `GET /projects/{id}/ai-statement` |
 | **Revisions** | `GET /projects/{id}/revisions` · `POST /projects/{id}/revisions` (save) · `PATCH` and `DELETE /projects/{id}/revisions/{n}` · `POST /projects/{id}/revisions/{n}/restore?key=` · `GET /projects/{id}/compare?a=&b=` · `GET /projects/{id}/compare/export/{docx\|pdf}?a=&b=` |
 | **Revision rounds** | `GET /projects/{id}/rounds` · `POST /projects/{id}/rounds` (paste comments) · `GET`, `PUT` and `DELETE /projects/{id}/rounds/{rid}` · `POST /projects/{id}/rounds/{rid}/apply` · `GET /projects/{id}/rounds/{rid}/letter.docx` |
-| **Uploads** | `POST /projects/{id}/references` · `DELETE /projects/{id}/references/{rid}` · `POST /projects/{id}/datasets` · `DELETE /projects/{id}/datasets/{name}` |
+| **Uploads and sources** | `POST /projects/{id}/references` · `DELETE /projects/{id}/references/{rid}` · `POST /projects/{id}/datasets` · `DELETE /projects/{id}/datasets/{name}` · `PUT /projects/{id}/source-mode?mode=references\|mixed\|research` · `DELETE /projects/{id}/sources/{sid}` (take an online source off the reading list) · `PUT /projects/{id}/sources/{sid}/pin?pinned=` |
 | **Project settings** | `PUT /projects/{id}/lengths` · `PUT /projects/{id}/tone` · `PUT /projects/{id}/publish-style` |
-| **Fabrication** | `POST /projects/{id}/generate` (start, or resume with `"resume": true`) · `GET /projects/{id}/events` (Server-Sent Events: log, stage, segment, checkpoint, job, error, done) · `POST /projects/{id}/review` (re-run the article review) |
-| **Studio** | `POST /projects/{id}/segments/{key}/revise` · `…/tool` · `…/regenerate` · `…/approve?approved=true\|false` · `…/restore/{n}` · `PUT /projects/{id}/segments/{key}` (manual edit) · `GET /projects/{id}/files/{path}` (figures) |
+| **Fabrication** | `POST /projects/{id}/generate` (start, or resume with `"resume": true`) · `GET /projects/{id}/events` (Server-Sent Events: log, stage, segment, checkpoint, job, error, done; and, not stored, `delta`, `sheet` and `edit` for the Window). `"sources_confirmed": true` continues a run that paused for the reading list · `POST /projects/{id}/review` (re-run the article review) |
+| **Studio** | `POST /projects/{id}/segments/{key}/revise` · `…/tool` (`tool`, optional `selection`, `strength` 1–3) · `…/regenerate` · `…/approve?approved=true\|false` · `…/restore/{n}` · `PUT /projects/{id}/segments/{key}` (manual edit) · `GET /projects/{id}/files/{path}` (figures) |
 | **Publishing** | `GET /projects/{id}/export/{pdf\|docx\|md\|tex}?draft=&template=&palette=` (`tex` returns a `.zip`) · `GET /projects/{id}/export/{bib\|ris}` (the reference list alone) · `POST /projects/{id}/import` |
 | **Format an article** | `POST /format` (upload a finished document; returns the new project and what was found) · `GET /projects/{id}/format/checks` · `POST /projects/{id}/format/restyle` (experimental) |
 | **Structure** | `GET /structure/gallery` · `PUT /projects/{id}/structure/titles/{key}` (rename; empty title = usual name) · `POST /projects/{id}/structure/segments` (add) · `PATCH` and `DELETE /projects/{id}/structure/segments/{key}` · `PUT /projects/{id}/structure/order` · `PUT /projects/{id}/structure/included/{key}?included=` · `POST /projects/{id}/structure/propose` · `POST /projects/{id}/segments/{key}/write`. Every project response also carries `structure`: all its segments in reading order. |
 | **Settings** | `GET /settings/app` · `PUT /settings/app` · `DELETE /settings/app` (reset) · `POST /settings/admin/unlock` · `POST /settings/admin/lock` · `PUT /settings/admin/passcode` · `GET /settings/llm` · `PUT /settings/llm` · `DELETE /settings/llm` (reset) · `POST /settings/llm/benchmark`. While a passcode is set, every `PUT` and `DELETE` here needs the `X-RAF-Admin` header with the token returned by `unlock`. |
+| **Cloud models** | `GET /settings/llm/keys` (keys without their secrets, providers and their rules) · `POST /settings/llm/keys` (`key`, optional `provider`, `model`, `label`, `base_url`, `parallel`, `role`) · `PATCH` and `DELETE /settings/llm/keys/{kid}` · `PUT /settings/llm/keys-order` · `PUT /settings/llm/mode?mode=local\|hybrid\|cloud` · `POST /settings/llm/keys/{kid}/test` (one very small paid request) · `GET /settings/llm/keys/{kid}/models`. Everything but the first needs the admin token while a passcode is set. `GET /health` carries `cloud` (mode and the engines, no secrets) and `ready`; `POST /projects/{id}/generate` takes `"cloud": false` to leave the cloud models out of a run. |
 
 Status codes worth knowing: **401** means settings are locked behind the admin passcode, **409** means another job is
 running on the project or segment, **422** means the request
@@ -679,6 +865,7 @@ backend/
     models.py        Pydantic data model: Project, Segment, Reference, RunInfo, request bodies
     store.py         project persistence: one JSON file per project, with locking
     jobs.py          background jobs and the live event stream
+    live.py          the Window: live text of the segments being written
     history.py       the project's History log and the AI-use statement
     revisions.py     whole-article revisions: save, compare, restore, changes-highlighted export
     rounds.py        revision rounds: split comments into points, apply them, draft the response letter
@@ -693,13 +880,16 @@ backend/
     rag.py           hybrid retrieval (embeddings + BM25 + TF-IDF, RRF, MMR)
     analysis.py      statistics engine, tables, figures
     factcheck.py     hallucination filter and whole-article review
-    style.py         style engine, naturalness score, Humanize
+    style.py         style engine: naturalness score, field profile, fact inventory
+    textops.py       the text tools (Expand … Humanize, Strengthen): diagnose, rules, rewrite, repair, gate, select
     originality.py   overlap detection, paraphrase enforcement, number verification
     citations.py     APA / Harvard / Chicago / IEEE formatting
     publisher.py     templates and palettes, DOCX + PDF + Markdown publishing, document re-import
     latex.py         LaTeX export: main.tex, references.bib and figures in a .zip
     formatter.py     "Format an existing article": read a document, find its outline, checks, reference restyle
-    llm.py           Ollama client, agent slots, out-of-memory fallbacks
+    llm.py           every model call: the team of engines (local model + cloud keys), routing, fallbacks
+    providers.py     cloud models: the key store, the rules per provider, Claude (SDK) and OpenAI-compatible calls
+    vault.py         encryption of the stored API keys
     llm_settings.py  language-model settings, presets, speed test
     app_settings.py  RAF's own settings: theme, defaults for new articles, admin lock
 frontend/
@@ -712,6 +902,8 @@ frontend/
     api.js                every API call in one place, plus the event stream
     ui.jsx                shared components: buttons, dropdowns, toasts, icons
     DevTools.jsx          the language-model controls (shown as a tab of Settings)
+    Providers.jsx         cloud models: key manager, provider marks, the team shown on the Segments page
+    Window.jsx            the Window: sheets that fill with text during fabrication
     TemplatePreview.jsx   in-app preview of the publishing templates
     theme.js              applies the theme, dark / light mode and background effects
     customTheme.js        the Custom theme: every colour derived from one picked colour
@@ -733,6 +925,7 @@ database.
 <data_dir>/
   app_settings.json        theme, defaults for new articles, admin lock (only after the first change)
   llm_settings.json        language-model settings (only after the first Save)
+  llm_keys.json            your cloud-model API keys, encrypted, and the Who-writes mode (only after the first key)
   timing_history.json      estimated vs actual run times, used to calibrate estimates
   backups/                 the last backup .zip made of each project
   projects/<project id>/
@@ -757,7 +950,7 @@ the last 400 log lines.
 ## Working on the code
 
 * **Keep the two version numbers equal.** `API_VERSION` in `backend/app/main.py` and `EXPECTED_API` in
-  `frontend/src/App.jsx` must match (both are `1.7.0`). When they differ, the interface shows the outdated-server
+  `frontend/src/App.jsx` must match (both are `1.8.2`). When they differ, the interface shows the outdated-server
   banner. Raise both whenever a backend change affects the interface.
 * **Restart the API after backend changes.** `start.bat` and the manual commands run `uvicorn` without `--reload`. The
   web interface reloads by itself when you edit files in `frontend/src`.
